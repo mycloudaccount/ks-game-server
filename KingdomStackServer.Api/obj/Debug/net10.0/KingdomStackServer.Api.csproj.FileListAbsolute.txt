@@ -69,3 +69,4 @@ c:\Users\pilgr\myApps\csharp\servers\kingdom-stack-server\.tmp-build\verify\King
 c:\Users\pilgr\myApps\csharp\servers\kingdom-stack-server\.tmp-build\verify\KingdomStackServer.Api.runtimeconfig.json
 c:\Users\pilgr\myApps\csharp\servers\kingdom-stack-server\.tmp-build\verify\KingdomStackServer.Api.dll
 c:\Users\pilgr\myApps\csharp\servers\kingdom-stack-server\.tmp-build\verify\KingdomStackServer.Api.pdb
+C:\Users\pilgr\myApps\csharp\servers\kingdom-stack-server\KingdomStackServer.Api\obj\Debug\net10.0\KingdomStackServer.Api.sourcelink.json

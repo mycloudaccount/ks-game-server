@@ -10,6 +10,8 @@ public class AzureBlobProxyOptions
 
     public string UserPreferencesStorageBaseUrl { get; set; } = string.Empty;
 
+    public string StackStampsStorageBaseUrl { get; set; } = string.Empty;
+
     public string TilesPrefix { get; set; } = "tiles";
 
     public string TilesBundleFileName { get; set; } = "tiles_bundle.zip";
@@ -21,4 +23,6 @@ public class AzureBlobProxyOptions
     public string UserGamesPrefix { get; set; } = "games";
 
     public string UserPreferencesPrefix { get; set; } = "preferences";
+
+    public string StackStampsPrefix { get; set; } = "stacks";
 }

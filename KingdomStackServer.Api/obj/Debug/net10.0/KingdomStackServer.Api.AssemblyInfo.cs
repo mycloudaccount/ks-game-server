@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("KingdomStackServer.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+12c656f5f78273a8691e3a30bcf8ab1c75ea5b59")]
 [assembly: System.Reflection.AssemblyProductAttribute("KingdomStackServer.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("KingdomStackServer.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

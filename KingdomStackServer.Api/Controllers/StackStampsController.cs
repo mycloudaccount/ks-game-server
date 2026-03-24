@@ -8,7 +8,7 @@ namespace KingdomStackServer.Api.Controllers;
 [Route("api/assets/stack-stamps")]
 public sealed class StackStampsController : ControllerBase
 {
-    private const int SupportedSchemaVersion = 1;
+    private static readonly HashSet<int> SupportedSchemaVersions = [1, 2];
     private const int MaxPreviewBytes = 512 * 1024;
     private static readonly byte[] PngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
 
@@ -324,9 +324,9 @@ public sealed class StackStampsController : ControllerBase
             return "A definition is required.";
         }
 
-        if (definition.SchemaVersion != SupportedSchemaVersion)
+        if (!SupportedSchemaVersions.Contains(definition.SchemaVersion))
         {
-            return $"Only schemaVersion {SupportedSchemaVersion} is supported.";
+            return "Only schemaVersion 1 and 2 are supported.";
         }
 
         if (definition.Entries is null || definition.Entries.Length == 0)
@@ -376,6 +376,145 @@ public sealed class StackStampsController : ControllerBase
             }
 
             return $"Entry '{entry.EntryId}' has unsupported entityType '{entry.EntityType}'.";
+        }
+
+        if (definition.SchemaVersion == 2)
+        {
+            var stacks = definition.Stacks ?? [];
+            var stackIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var entryMembership = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var stack in stacks)
+            {
+                if (string.IsNullOrWhiteSpace(stack.StackId))
+                {
+                    return "Each stack must have a stackId.";
+                }
+
+                var normalizedStackId = stack.StackId.Trim();
+                if (!stackIds.Add(normalizedStackId))
+                {
+                    return $"Duplicate stackId '{stack.StackId}' is not allowed.";
+                }
+
+                if (string.IsNullOrWhiteSpace(stack.Name))
+                {
+                    return $"Stack '{stack.StackId}' must have a name.";
+                }
+
+                if (string.IsNullOrWhiteSpace(stack.AnchorEntryId))
+                {
+                    return $"Stack '{stack.StackId}' must have an anchorEntryId.";
+                }
+
+                var normalizedAnchorEntryId = stack.AnchorEntryId.Trim();
+                if (!entryIds.Contains(normalizedAnchorEntryId))
+                {
+                    return $"Stack '{stack.StackId}' references missing anchorEntryId '{stack.AnchorEntryId}'.";
+                }
+
+                var normalizedEntryIds = (stack.EntryIds ?? [])
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Select(id => id.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (normalizedEntryIds.Length == 0)
+                {
+                    return $"Stack '{stack.StackId}' must include at least one entryId.";
+                }
+
+                if (!normalizedEntryIds.Contains(normalizedAnchorEntryId, StringComparer.OrdinalIgnoreCase))
+                {
+                    return $"Stack '{stack.StackId}' anchorEntryId must also appear in entryIds.";
+                }
+
+                foreach (var entryId in normalizedEntryIds)
+                {
+                    if (!entryIds.Contains(entryId))
+                    {
+                        return $"Stack '{stack.StackId}' references missing entryId '{entryId}'.";
+                    }
+
+                    if (entryMembership.TryGetValue(entryId, out var ownerStackId))
+                    {
+                        return $"Entry '{entryId}' cannot belong to more than one stack ('{ownerStackId}' and '{stack.StackId}').";
+                    }
+
+                    entryMembership[entryId] = normalizedStackId;
+                }
+            }
+
+            foreach (var stack in stacks)
+            {
+                foreach (var childStackId in stack.ChildStackIds ?? [])
+                {
+                    if (string.IsNullOrWhiteSpace(childStackId) || !stackIds.Contains(childStackId.Trim()))
+                    {
+                        return $"Stack '{stack.StackId}' references missing childStackId '{childStackId}'.";
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(stack.ParentStackId) && !stackIds.Contains(stack.ParentStackId.Trim()))
+                {
+                    return $"Stack '{stack.StackId}' references missing parentStackId '{stack.ParentStackId}'.";
+                }
+            }
+
+            var cycleError = ValidateStackGraphHasNoCycles(stacks);
+            if (cycleError is not null)
+            {
+                return cycleError;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ValidateStackGraphHasNoCycles(StackStampGroupDto[] stacks)
+    {
+        var childrenById = stacks.ToDictionary(
+            stack => stack.StackId.Trim(),
+            stack => (stack.ChildStackIds ?? [])
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .ToArray(),
+            StringComparer.OrdinalIgnoreCase);
+
+        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        bool Dfs(string stackId)
+        {
+            if (visited.Contains(stackId))
+            {
+                return false;
+            }
+
+            if (!visiting.Add(stackId))
+            {
+                return true;
+            }
+
+            foreach (var childId in childrenById.GetValueOrDefault(stackId, []))
+            {
+                if (Dfs(childId))
+                {
+                    return true;
+                }
+            }
+
+            visiting.Remove(stackId);
+            visited.Add(stackId);
+            return false;
+        }
+
+        foreach (var stackId in childrenById.Keys)
+        {
+            if (Dfs(stackId))
+            {
+                return $"Stack hierarchy contains a cycle involving '{stackId}'.";
+            }
         }
 
         return null;

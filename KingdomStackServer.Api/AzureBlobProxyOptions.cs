@@ -20,6 +20,10 @@ public class AzureBlobProxyOptions
 
     public string CharactersBundleFileName { get; set; } = "eddie.zip";
 
+    public string SoundsPrefix { get; set; } = "sounds";
+
+    public string SoundsBundleFileName { get; set; } = "sounds_bundle.zip";
+
     public string UserGamesPrefix { get; set; } = "games";
 
     public string UserPreferencesPrefix { get; set; } = "preferences";

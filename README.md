@@ -34,6 +34,12 @@ The API uses Azure Blob Storage for static game assets, user game saves, user pr
 - `GET /api/assets/characters/bundle` downloads the characters bundle zip.
 - `GET /api/assets/characters/{**blobPath}` returns a single character asset by blob path.
 
+### Sound assets
+
+- `GET /api/assets/sounds/list` lists sound assets, optionally filtered by `prefix`.
+- `GET /api/assets/sounds/bundle` downloads the sounds bundle zip.
+- `GET /api/assets/sounds/{**blobPath}` returns a single sound asset by blob path.
+
 ### Games
 
 - `POST /api/games` upserts a user game JSON document.

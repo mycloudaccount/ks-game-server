@@ -80,6 +80,11 @@ public class AzureBlobProxyService
         CancellationToken cancellationToken)
         => await GetAssetAsync(_options.CharactersPrefix, blobPath, cancellationToken);
 
+    public async Task<AzureBlobContent?> GetSoundAssetAsync(
+        string blobPath,
+        CancellationToken cancellationToken)
+        => await GetAssetAsync(_options.SoundsPrefix, blobPath, cancellationToken);
+
     public async Task<AzureBlobContent?> GetUserGameAssetAsync(
         string scopeKey,
         string blobPath,
@@ -131,6 +136,11 @@ public class AzureBlobProxyService
         string? prefix,
         CancellationToken cancellationToken)
         => await ListAssetsAsync(_options.CharactersPrefix, prefix, cancellationToken);
+
+    public async Task<IReadOnlyList<TileAssetListItem>> ListSoundAssetsAsync(
+        string? prefix,
+        CancellationToken cancellationToken)
+        => await ListAssetsAsync(_options.SoundsPrefix, prefix, cancellationToken);
 
     public async Task<IReadOnlyList<TileAssetListItem>> ListAssetsAsync(
         string rootPrefix,

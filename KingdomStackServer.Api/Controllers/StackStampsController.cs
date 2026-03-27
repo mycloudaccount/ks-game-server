@@ -419,12 +419,18 @@ public sealed class StackStampsController : ControllerBase
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
 
-                if (normalizedEntryIds.Length == 0)
+                var normalizedChildStackIds = (stack.ChildStackIds ?? [])
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Select(id => id.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (normalizedEntryIds.Length == 0 && normalizedChildStackIds.Length == 0)
                 {
-                    return $"Stack '{stack.StackId}' must include at least one entryId.";
+                    return $"Stack '{stack.StackId}' must include at least one entryId or childStackId.";
                 }
 
-                if (!normalizedEntryIds.Contains(normalizedAnchorEntryId, StringComparer.OrdinalIgnoreCase))
+                if (normalizedEntryIds.Length > 0 && !normalizedEntryIds.Contains(normalizedAnchorEntryId, StringComparer.OrdinalIgnoreCase))
                 {
                     return $"Stack '{stack.StackId}' anchorEntryId must also appear in entryIds.";
                 }

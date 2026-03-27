@@ -44,7 +44,9 @@ app.MapGet("/", () => Results.Ok(new
     name = "KingdomStackServer.Api",
     status = "running",
     tilesBaseUrl = "/api/assets/tiles",
-    tilesBundleUrl = "/api/assets/tiles/bundle"
+    tilesBundleUrl = "/api/assets/tiles/bundle",
+    soundsBaseUrl = "/api/assets/sounds",
+    soundsBundleUrl = "/api/assets/sounds/bundle"
 }));
 
 app.Run();

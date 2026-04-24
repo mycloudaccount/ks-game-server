@@ -11,4 +11,8 @@ public sealed record GameResponse(
     DateTimeOffset? LastModified,
     string DownloadUrl,
     string LoadUrl,
-    JsonElement Game);
+    string? StoredFormat,
+    string? StoredSchema,
+    int? StoredVersion,
+    JsonElement? Document,
+    JsonElement? Game);

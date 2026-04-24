@@ -40,6 +40,17 @@ The API uses Azure Blob Storage for static game assets, user game saves, user pr
 - `GET /api/assets/sounds/bundle` downloads the sounds bundle zip.
 - `GET /api/assets/sounds/{**blobPath}` returns a single sound asset by blob path.
 
+### Particle effects
+
+- `GET /api/assets/particle-effects/foot-trails` lists saved foot trail particle effects.
+- `GET /api/assets/particle-effects/landing-impacts` lists saved landing impact particle effects.
+- `GET /api/assets/particle-effects/{foot-trails|landing-impacts}/{particleEffectId}` returns one saved particle effect.
+- `POST /api/assets/particle-effects/{foot-trails|landing-impacts}` creates a particle effect.
+- `PUT /api/assets/particle-effects/{foot-trails|landing-impacts}/{particleEffectId}` updates a particle effect with an `etag`.
+- `DELETE /api/assets/particle-effects/{foot-trails|landing-impacts}/{particleEffectId}` deletes a particle effect.
+
+Landing impact particle configs may include `whenLandingOn`; omit it or set it to `null` to apply the effect to every tile, or set it to a tile id to limit the impact to that tile.
+
 ### Games
 
 - `POST /api/games` upserts a user game JSON document.
@@ -47,7 +58,9 @@ The API uses Azure Blob Storage for static game assets, user game saves, user pr
 - `GET /api/games/{gameId}` returns a saved game by `gameId`.
 - `DELETE /api/games/{gameId}` deletes a saved game by `gameId`.
 
-`POST /api/games` request body:
+`POST /api/games` supports both legacy and canonical request bodies during migration.
+
+Legacy request body:
 
 ```json
 {
@@ -57,6 +70,52 @@ The API uses Azure Blob Storage for static game assets, user game saves, user pr
     "gameId": "my-first-game",
     "name": "My First Game"
   }
+}
+```
+
+Canonical request body:
+
+```json
+{
+  "gameId": "my-first-game",
+  "name": "My First Game",
+  "document": {
+    "document": {
+      "id": "my-first-game",
+      "name": "My First Game",
+      "schema": "ks.game",
+      "version": 1
+    },
+    "scenes": []
+  }
+}
+```
+
+`GET /api/games` and `GET /api/games/{gameId}` now include storage-format metadata fields:
+
+- `storedFormat`: `canonical` or `legacy`
+- `storedSchema`: currently `ks.game` for canonical payloads
+- `storedVersion`: canonical schema version when available
+
+`GET /api/games/{gameId}` returns:
+
+- `document` when the stored payload is canonical
+- `game` when the stored payload is legacy
+
+When canonical save validation fails, `POST /api/games` returns:
+
+```json
+{
+  "error": "canonical_validation_failed",
+  "message": "Canonical game document validation failed.",
+  "issues": [
+    {
+      "code": "document.schema.invalid",
+      "message": "request.document.document.schema must be 'ks.game'.",
+      "path": "document.document.schema",
+      "severity": "error"
+    }
+  ]
 }
 ```
 

@@ -8,5 +8,7 @@ public sealed class SaveGameRequest
 
     public string? Name { get; init; }
 
+    public JsonElement? Document { get; init; }
+
     public JsonElement? Game { get; init; }
 }

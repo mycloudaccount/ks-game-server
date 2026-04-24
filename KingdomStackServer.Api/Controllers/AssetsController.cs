@@ -8,6 +8,9 @@ namespace KingdomStackServer.Api.Controllers;
 [Route("api/assets/tiles")]
 public class AssetsController : ControllerBase
 {
+    private const string StoredFormatCanonical = "canonical";
+    private const string StoredFormatLegacy = "legacy";
+    private const string StoredSchemaKsGame = "ks.game";
     private readonly AzureBlobProxyService _azureBlobProxyService;
     private readonly AzureBlobProxyOptions _options;
 
@@ -252,26 +255,104 @@ public class AssetsController : ControllerBase
             return BadRequest("A gameId is required.");
         }
 
-        if (request.Game is null || request.Game.Value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        var hasDocument = request.Document is { ValueKind: not JsonValueKind.Undefined and not JsonValueKind.Null };
+        var hasGame = request.Game is { ValueKind: not JsonValueKind.Undefined and not JsonValueKind.Null };
+        if (!hasDocument && !hasGame)
         {
-            return BadRequest("A game payload is required.");
+            return BadRequest("A canonical document or legacy game payload is required.");
         }
 
         var userContext = await _azureBlobProxyService.GetStorageUserContextAsync(cancellationToken);
         var requestName = request.Name?.Trim();
-        var embeddedGameId = TryGetEmbeddedString(request.Game.Value, "gameId")
-            ?? TryGetEmbeddedString(request.Game.Value, "id");
+        var payload = hasDocument ? request.Document!.Value : request.Game!.Value;
+        string storedFormat;
+        string? storedSchema = null;
+        int? storedVersion = null;
+        string? embeddedGameId;
+        string? embeddedGameName;
+
+        if (hasDocument)
+        {
+            storedFormat = StoredFormatCanonical;
+            storedSchema = TryGetNestedString(payload, "document", "schema");
+            storedVersion = TryGetNestedInt(payload, "document", "version");
+            embeddedGameId = TryGetNestedString(payload, "document", "id");
+            embeddedGameName = TryGetNestedString(payload, "document", "name");
+
+            if (!string.Equals(storedSchema, StoredSchemaKsGame, StringComparison.Ordinal))
+            {
+                return CanonicalValidationFailed(
+                    new CanonicalValidationIssueResponse(
+                        "document.schema.invalid",
+                        "request.document.document.schema must be 'ks.game'.",
+                        "document.document.schema"));
+            }
+
+            if (!storedVersion.HasValue || storedVersion.Value <= 0)
+            {
+                return CanonicalValidationFailed(
+                    new CanonicalValidationIssueResponse(
+                        "document.version.invalid",
+                        "request.document.document.version must be a positive integer.",
+                        "document.document.version"));
+            }
+
+            if (string.IsNullOrWhiteSpace(embeddedGameId))
+            {
+                return CanonicalValidationFailed(
+                    new CanonicalValidationIssueResponse(
+                        "document.id.missing",
+                        "request.document.document.id is required.",
+                        "document.document.id"));
+            }
+
+            if (string.IsNullOrWhiteSpace(embeddedGameName))
+            {
+                return CanonicalValidationFailed(
+                    new CanonicalValidationIssueResponse(
+                        "document.name.missing",
+                        "request.document.document.name is required.",
+                        "document.document.name"));
+            }
+        }
+        else
+        {
+            storedFormat = StoredFormatLegacy;
+            embeddedGameId = TryGetEmbeddedString(payload, "gameId")
+                ?? TryGetEmbeddedString(payload, "id");
+            embeddedGameName = TryGetEmbeddedString(payload, "name");
+        }
+
         if (!string.IsNullOrWhiteSpace(embeddedGameId)
             && !string.Equals(embeddedGameId, gameId, StringComparison.Ordinal))
         {
+            if (hasDocument)
+            {
+                return CanonicalValidationFailed(
+                    new CanonicalValidationIssueResponse(
+                        "document.id.mismatch",
+                        "request.gameId must match request.document.document.id.",
+                        "document.document.id",
+                        RelatedIds: [gameId, embeddedGameId]));
+            }
+
             return BadRequest("request.gameId must match the embedded game's id.");
         }
 
-        var embeddedGameName = TryGetEmbeddedString(request.Game.Value, "name");
         if (!string.IsNullOrWhiteSpace(requestName)
             && !string.IsNullOrWhiteSpace(embeddedGameName)
             && !string.Equals(embeddedGameName, requestName, StringComparison.Ordinal))
         {
+            if (hasDocument)
+            {
+                return CanonicalValidationFailed(
+                    new CanonicalValidationIssueResponse(
+                        "document.name.mismatch",
+                        "request.name must match request.document.document.name when provided.",
+                        "document.document.name",
+                        RelatedIds: [requestName, embeddedGameName]));
+            }
+
             return BadRequest("request.name must match the embedded game's name when provided.");
         }
 
@@ -285,7 +366,10 @@ public class AssetsController : ControllerBase
             userContext.ScopeKey,
             gameId,
             name,
-            request.Game.Value.GetRawText(),
+            payload.GetRawText(),
+            storedFormat,
+            storedSchema,
+            storedVersion,
             cancellationToken);
 
         return Ok(new UserGameMetadataResponse(
@@ -296,7 +380,10 @@ public class AssetsController : ControllerBase
             $"{Request.Scheme}://{Request.Host}/api/games/{result.GameId}",
             result.CreatedAt,
             result.LastModified,
-            result.ContentLength));
+            result.ContentLength,
+            storedFormat,
+            storedSchema,
+            storedVersion));
     }
 
     [HttpGet("/api/games")]
@@ -319,7 +406,10 @@ public class AssetsController : ControllerBase
                 $"{Request.Scheme}://{Request.Host}/api/games/{item.GameId}",
                 item.CreatedAt,
                 item.LastModified,
-                item.ContentLength))
+                item.ContentLength,
+                item.StoredFormat,
+                item.StoredSchema,
+                item.StoredVersion))
                 .ToArray()));
     }
 
@@ -376,6 +466,78 @@ public class AssetsController : ControllerBase
         return deleted ? NoContent() : NotFound();
     }
 
+    [HttpGet("/api/client-messages")]
+    public async Task<IActionResult> GetClientMessages(CancellationToken cancellationToken)
+    {
+        var userContext = await _azureBlobProxyService.GetStorageUserContextAsync(cancellationToken);
+        var messages = await _azureBlobProxyService.GetClientMessagesAsync(
+            userContext,
+            cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(messages.ETag))
+        {
+            Response.Headers.ETag = messages.ETag;
+        }
+
+        if (messages.LastModified is not null)
+        {
+            Response.Headers.LastModified = messages.LastModified.Value.ToString("R");
+        }
+
+        return Ok(messages);
+    }
+
+    [HttpPost("/api/client-messages/{messageId}/read")]
+    public async Task<IActionResult> MarkClientMessageRead(
+        string messageId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedMessageId = messageId?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedMessageId))
+        {
+            return BadRequest("A messageId is required.");
+        }
+
+        var userContext = await _azureBlobProxyService.GetStorageUserContextAsync(cancellationToken);
+        await _azureBlobProxyService.MarkClientMessageReadAsync(
+            userContext.ScopeKey,
+            normalizedMessageId,
+            cancellationToken);
+
+        return NoContent();
+    }
+
+    [HttpPost("/api/client-messages/{messageId}/dismiss")]
+    public async Task<IActionResult> DismissClientMessage(
+        string messageId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedMessageId = messageId?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedMessageId))
+        {
+            return BadRequest("A messageId is required.");
+        }
+
+        var userContext = await _azureBlobProxyService.GetStorageUserContextAsync(cancellationToken);
+        await _azureBlobProxyService.DismissClientMessageAsync(
+            userContext.ScopeKey,
+            normalizedMessageId,
+            cancellationToken);
+
+        return NoContent();
+    }
+
+    [HttpPost("/api/client-messages/read-all")]
+    public async Task<IActionResult> MarkAllClientMessagesRead(CancellationToken cancellationToken)
+    {
+        var userContext = await _azureBlobProxyService.GetStorageUserContextAsync(cancellationToken);
+        await _azureBlobProxyService.MarkAllClientMessagesReadAsync(
+            userContext,
+            cancellationToken);
+
+        return NoContent();
+    }
+
     [HttpGet("/api/games/{gameId}")]
     public async Task<IActionResult> GetGame(
         string gameId,
@@ -403,6 +565,10 @@ public class AssetsController : ControllerBase
             game.LastModified,
             string.Empty,
             $"{Request.Scheme}://{Request.Host}/api/games/{game.GameId}",
+            game.StoredFormat,
+            game.StoredSchema,
+            game.StoredVersion,
+            game.Document,
             game.Game));
     }
 
@@ -467,5 +633,49 @@ public class AssetsController : ControllerBase
         }
 
         return property.GetString();
+    }
+
+    private static string? TryGetNestedString(
+        JsonElement element,
+        string objectPropertyName,
+        string propertyName)
+    {
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(objectPropertyName, out var nested)
+            || nested.ValueKind != JsonValueKind.Object
+            || !nested.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return property.GetString();
+    }
+
+    private static int? TryGetNestedInt(
+        JsonElement element,
+        string objectPropertyName,
+        string propertyName)
+    {
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(objectPropertyName, out var nested)
+            || nested.ValueKind != JsonValueKind.Object
+            || !nested.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.Number
+            || !property.TryGetInt32(out var parsed))
+        {
+            return null;
+        }
+
+        return parsed;
+    }
+
+    private IActionResult CanonicalValidationFailed(
+        params CanonicalValidationIssueResponse[] issues)
+    {
+        return BadRequest(new CanonicalValidationErrorResponse(
+            "canonical_validation_failed",
+            "Canonical game document validation failed.",
+            issues));
     }
 }

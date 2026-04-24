@@ -10,6 +10,8 @@ public class AzureBlobProxyOptions
 
     public string UserPreferencesStorageBaseUrl { get; set; } = string.Empty;
 
+    public string ClientMessagesStorageBaseUrl { get; set; } = string.Empty;
+
     public string StackStampsStorageBaseUrl { get; set; } = string.Empty;
 
     public string TilesPrefix { get; set; } = "tiles";
@@ -28,5 +30,11 @@ public class AzureBlobProxyOptions
 
     public string UserPreferencesPrefix { get; set; } = "preferences";
 
+    public string ClientMessagesBlobName { get; set; } = "messages.json";
+
     public string StackStampsPrefix { get; set; } = "stacks";
+
+    public string ParticleEffectsStorageBaseUrl { get; set; } = string.Empty;
+
+    public string ParticleEffectsPrefix { get; set; } = "particle-effects";
 }

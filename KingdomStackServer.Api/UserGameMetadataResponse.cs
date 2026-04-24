@@ -8,4 +8,7 @@ public sealed record UserGameMetadataResponse(
     string LoadUrl,
     DateTimeOffset? CreatedAt,
     DateTimeOffset? LastModified,
-    long? ContentLength);
+    long? ContentLength,
+    string? StoredFormat,
+    string? StoredSchema,
+    int? StoredVersion);

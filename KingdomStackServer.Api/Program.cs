@@ -46,7 +46,10 @@ app.MapGet("/", () => Results.Ok(new
     tilesBaseUrl = "/api/assets/tiles",
     tilesBundleUrl = "/api/assets/tiles/bundle",
     soundsBaseUrl = "/api/assets/sounds",
-    soundsBundleUrl = "/api/assets/sounds/bundle"
+    soundsBundleUrl = "/api/assets/sounds/bundle",
+    clientMessagesUrl = "/api/client-messages",
+    footTrailParticleEffectsUrl = "/api/assets/particle-effects/foot-trails",
+    landingImpactParticleEffectsUrl = "/api/assets/particle-effects/landing-impacts"
 }));
 
 app.Run();

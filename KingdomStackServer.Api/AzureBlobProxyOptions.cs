@@ -22,6 +22,10 @@ public class AzureBlobProxyOptions
 
     public string CharactersBundleFileName { get; set; } = "eddie.zip";
 
+    public string CharacterSourcePacksPrefix { get; set; } = "character-source-packs";
+
+    public string CharacterSourcePacksBundleFileName { get; set; } = "meshtint-characters-catalog.zip";
+
     public string SoundsPrefix { get; set; } = "sounds";
 
     public string SoundsBundleFileName { get; set; } = "sounds_bundle.zip";

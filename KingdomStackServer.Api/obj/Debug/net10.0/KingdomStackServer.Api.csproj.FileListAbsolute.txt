@@ -92,3 +92,11 @@ C:\Users\pilgr\myApps\react\ks-game-editor\.tmp\ks-server-out\KingdomStackServer
 C:\Users\pilgr\myApps\react\ks-game-editor\.tmp\ks-server-out\KingdomStackServer.Api.runtimeconfig.json
 C:\Users\pilgr\myApps\react\ks-game-editor\.tmp\ks-server-out\KingdomStackServer.Api.dll
 C:\Users\pilgr\myApps\react\ks-game-editor\.tmp\ks-server-out\KingdomStackServer.Api.pdb
+C:\myapps\temp\ks-server-build-verify\appsettings.Development.json
+C:\myapps\temp\ks-server-build-verify\appsettings.json
+C:\myapps\temp\ks-server-build-verify\KingdomStackServer.Api.staticwebassets.endpoints.json
+C:\myapps\temp\ks-server-build-verify\KingdomStackServer.Api.exe
+C:\myapps\temp\ks-server-build-verify\KingdomStackServer.Api.deps.json
+C:\myapps\temp\ks-server-build-verify\KingdomStackServer.Api.runtimeconfig.json
+C:\myapps\temp\ks-server-build-verify\KingdomStackServer.Api.dll
+C:\myapps\temp\ks-server-build-verify\KingdomStackServer.Api.pdb

@@ -94,6 +94,11 @@ public class AzureBlobProxyService
         CancellationToken cancellationToken)
         => await GetAssetAsync(_options.CharactersPrefix, blobPath, cancellationToken);
 
+    public async Task<AzureBlobContent?> GetCharacterSourcePackAssetAsync(
+        string blobPath,
+        CancellationToken cancellationToken)
+        => await GetAssetAsync(_options.CharacterSourcePacksPrefix, blobPath, cancellationToken);
+
     public async Task<AzureBlobContent?> GetSoundAssetAsync(
         string blobPath,
         CancellationToken cancellationToken)
@@ -150,6 +155,11 @@ public class AzureBlobProxyService
         string? prefix,
         CancellationToken cancellationToken)
         => await ListAssetsAsync(_options.CharactersPrefix, prefix, cancellationToken);
+
+    public async Task<IReadOnlyList<TileAssetListItem>> ListCharacterSourcePackAssetsAsync(
+        string? prefix,
+        CancellationToken cancellationToken)
+        => await ListAssetsAsync(_options.CharacterSourcePacksPrefix, prefix, cancellationToken);
 
     public async Task<IReadOnlyList<TileAssetListItem>> ListSoundAssetsAsync(
         string? prefix,

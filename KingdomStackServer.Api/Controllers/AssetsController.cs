@@ -68,6 +68,32 @@ public class AssetsController : ControllerBase
         return Ok(response);
     }
 
+    [HttpGet("/api/assets/character-source-packs/list")]
+    public async Task<IActionResult> ListCharacterSourcePackAssets(
+        [FromQuery] string? prefix,
+        CancellationToken cancellationToken)
+    {
+        var items = await _azureBlobProxyService.ListCharacterSourcePackAssetsAsync(prefix, cancellationToken);
+        var normalizedPrefix = prefix?.Trim('/');
+        var packItems = items
+            .Where(item => item.BlobPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        var response = new TileAssetListResponse(
+            normalizedPrefix ?? string.Empty,
+            packItems.Length,
+            packItems.Select(item => new TileAssetListResponseItem(
+                Path.GetFileNameWithoutExtension(item.BlobPath),
+                Path.GetFileName(item.BlobPath),
+                item.BlobPath,
+                $"{Request.Scheme}://{Request.Host}/api/assets/character-source-packs/{item.BlobPath}",
+                item.ContentLength,
+                item.LastModified))
+                .ToArray());
+
+        return Ok(response);
+    }
+
     [HttpGet("catalog")]
     public async Task<IActionResult> GetTileCatalog(CancellationToken cancellationToken)
     {
@@ -157,6 +183,27 @@ public class AssetsController : ControllerBase
             enableRangeProcessing: true);
     }
 
+    [HttpGet("/api/assets/character-source-packs/bundle")]
+    public async Task<IActionResult> DownloadCharacterSourcePacksBundle(CancellationToken cancellationToken)
+    {
+        var asset = await _azureBlobProxyService.GetCharacterSourcePackAssetAsync(
+            _options.CharacterSourcePacksBundleFileName,
+            cancellationToken);
+
+        if (asset is null)
+        {
+            return NotFound();
+        }
+
+        ApplyAssetHeaders(asset);
+
+        return File(
+            asset.Content,
+            "application/zip",
+            fileDownloadName: _options.CharacterSourcePacksBundleFileName,
+            enableRangeProcessing: true);
+    }
+
     [HttpGet("{**blobPath}")]
     public async Task<IActionResult> GetTileAsset(string blobPath, CancellationToken cancellationToken)
     {
@@ -194,6 +241,34 @@ public class AssetsController : ControllerBase
         }
 
         var asset = await _azureBlobProxyService.GetCharacterAssetAsync(blobPath, cancellationToken);
+        if (asset is null)
+        {
+            return NotFound();
+        }
+
+        ApplyAssetHeaders(asset);
+
+        var fileName = Path.GetFileName(blobPath);
+        var contentType = blobPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+            ? "application/zip"
+            : asset.ContentType;
+
+        return File(
+            asset.Content,
+            contentType,
+            fileDownloadName: fileName,
+            enableRangeProcessing: true);
+    }
+
+    [HttpGet("/api/assets/character-source-packs/{**blobPath}")]
+    public async Task<IActionResult> GetCharacterSourcePackAsset(string blobPath, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(blobPath))
+        {
+            return BadRequest("A blob path is required.");
+        }
+
+        var asset = await _azureBlobProxyService.GetCharacterSourcePackAssetAsync(blobPath, cancellationToken);
         if (asset is null)
         {
             return NotFound();

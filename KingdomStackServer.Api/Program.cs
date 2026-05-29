@@ -2,7 +2,7 @@ using KingdomStackServer.Api;
 
 var builder = WebApplication.CreateBuilder(args);
 
-const string LocalClientCorsPolicy = "LocalClient";
+const string ClientCorsPolicy = "ClientCors";
 
 builder.Services.Configure<AzureBlobProxyOptions>(
     builder.Configuration.GetSection(AzureBlobProxyOptions.SectionName));
@@ -11,11 +11,33 @@ builder.Services.AddControllers();
 builder.Services.AddSwaggerGen();
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy(LocalClientCorsPolicy, policy =>
+    options.AddPolicy(ClientCorsPolicy, policy =>
     {
-        policy.WithOrigins(
+        var configuredOrigins = builder.Configuration
+            .GetSection("Cors:AllowedOrigins")
+            .Get<string[]>();
+
+        var allowedOrigins = (configuredOrigins ?? [])
+            .Where(origin => !string.IsNullOrWhiteSpace(origin))
+            .Select(origin => origin.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (allowedOrigins.Length == 0 && builder.Environment.IsDevelopment())
+        {
+            allowedOrigins =
+            [
                 "http://localhost:4000",
-                "http://localhost:5173")
+                "http://localhost:5173"
+            ];
+        }
+
+        if (allowedOrigins.Length == 0)
+        {
+            return;
+        }
+
+        policy.WithOrigins(allowedOrigins)
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials();
@@ -24,7 +46,7 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-app.UseCors(LocalClientCorsPolicy);
+app.UseCors(ClientCorsPolicy);
 app.UseHttpsRedirection();
 
 if (app.Environment.IsDevelopment())

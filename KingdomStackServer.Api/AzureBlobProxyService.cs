@@ -19,6 +19,7 @@ public class AzureBlobProxyService
     private const string ParticleEffectTypeFootTrail = "footTrail";
     private const string ParticleEffectTypeLandingImpact = "landingImpact";
     private static readonly Regex InvalidGameIdCharacters = new("[^a-zA-Z0-9._-]+", RegexOptions.Compiled);
+    private static readonly Regex InvalidCharacterIdCharacters = new("[^a-zA-Z0-9._-]+", RegexOptions.Compiled);
     private static readonly Regex InvalidStackStampIdCharacters = new("[^a-zA-Z0-9._-]+", RegexOptions.Compiled);
     private static readonly Regex InvalidParticleEffectIdCharacters = new("[^a-zA-Z0-9._-]+", RegexOptions.Compiled);
     private readonly AzureBlobProxyOptions _options;
@@ -831,6 +832,264 @@ public class AzureBlobProxyService
         return definitionDeleted.Value || previewDeleted.Value;
     }
 
+    public async Task<UserEditorCharacterListResult> ListUserEditorCharactersAsync(
+        string scopeKey,
+        string? prefix,
+        int? limit,
+        string? continuationToken,
+        CancellationToken cancellationToken)
+    {
+        var normalizedPrefix = prefix?.Trim();
+        var pageSize = Math.Clamp(limit ?? 50, 1, 200);
+        var rootPrefix = BuildUserEditorCharactersRootPrefix(scopeKey);
+        var blobPrefix = string.IsNullOrWhiteSpace(normalizedPrefix)
+            ? rootPrefix
+            : BuildBlobName(rootPrefix, normalizedPrefix);
+        var items = new List<UserEditorCharacterListItem>(pageSize);
+        var pageable = _blobContainerClient.GetBlobsAsync(
+            traits: BlobTraits.Metadata,
+            states: BlobStates.None,
+            prefix: blobPrefix,
+            cancellationToken: cancellationToken);
+
+        await foreach (var page in pageable.AsPages(continuationToken, pageSizeHint: pageSize))
+        {
+            foreach (var blobItem in page.Values)
+            {
+                if (!blobItem.Name.EndsWith("/definition.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var item = await CreateUserEditorCharacterListItemAsync(blobItem, scopeKey, cancellationToken);
+                if (item is null)
+                {
+                    continue;
+                }
+
+                items.Add(item);
+            }
+
+            if (items.Count >= pageSize)
+            {
+                return new UserEditorCharacterListResult(items.Take(pageSize).ToArray(), page.ContinuationToken);
+            }
+
+            if (string.IsNullOrWhiteSpace(page.ContinuationToken))
+            {
+                return new UserEditorCharacterListResult(items, null);
+            }
+        }
+
+        return new UserEditorCharacterListResult(items, null);
+    }
+
+    public async Task<bool> UserEditorCharacterNameExistsAsync(
+        string scopeKey,
+        string name,
+        string? excludeCharacterId,
+        CancellationToken cancellationToken)
+    {
+        var rootPrefix = BuildUserEditorCharactersRootPrefix(scopeKey);
+        var normalizedName = name.Trim();
+        var normalizedExcludedId = string.IsNullOrWhiteSpace(excludeCharacterId)
+            ? null
+            : NormalizeCharacterId(excludeCharacterId);
+
+        await foreach (var blobItem in _blobContainerClient.GetBlobsAsync(
+                           traits: BlobTraits.Metadata,
+                           states: BlobStates.None,
+                           prefix: rootPrefix,
+                           cancellationToken: cancellationToken))
+        {
+            if (!blobItem.Name.EndsWith("/definition.json", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var item = await CreateUserEditorCharacterListItemAsync(blobItem, scopeKey, cancellationToken);
+            if (item is null)
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(normalizedExcludedId)
+                && string.Equals(item.Id, normalizedExcludedId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (string.Equals(item.Name, normalizedName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public async Task<UserEditorCharacterContent?> GetUserEditorCharacterAsync(
+        string scopeKey,
+        string characterId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedCharacterId = NormalizeCharacterId(characterId);
+        var relativeBlobPath = BuildEditorCharacterDefinitionRelativePath(normalizedCharacterId);
+        var blobName = BuildBlobName(BuildUserEditorCharactersRootPrefix(scopeKey), relativeBlobPath);
+        var blobClient = _blobContainerClient.GetBlobClient(blobName);
+
+        try
+        {
+            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
+            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+            var document = DeserializeStoredEditorCharacterDocument(response.Value.Content.ToString());
+
+            return new UserEditorCharacterContent(
+                document.Id,
+                document.Name,
+                relativeBlobPath,
+                document.HasThumbnail,
+                document.SchemaVersion,
+                document.Version,
+                document.SelectedPackId,
+                properties.Value.CreatedOn,
+                properties.Value.LastModified,
+                properties.Value.ETag.ToString(),
+                document.Definition);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+    }
+
+    public async Task<UserEditorCharacterSaveResult> SaveUserEditorCharacterAsync(
+        string scopeKey,
+        string characterId,
+        string name,
+        EditorCharacterDefinitionDto definition,
+        byte[]? thumbnailBytes,
+        string? thumbnailContentType,
+        string? ifMatchEtag,
+        bool clearThumbnail,
+        bool createOnly,
+        CancellationToken cancellationToken)
+    {
+        var normalizedCharacterId = NormalizeCharacterId(characterId);
+        var relativeBlobPath = BuildEditorCharacterDefinitionRelativePath(normalizedCharacterId);
+        var rootPrefix = BuildUserEditorCharactersRootPrefix(scopeKey);
+        var blobName = BuildBlobName(rootPrefix, relativeBlobPath);
+        var blobClient = _blobContainerClient.GetBlobClient(blobName);
+
+        StoredEditorCharacterDocument? existingDocument = null;
+        if (!createOnly)
+        {
+            existingDocument = await GetStoredEditorCharacterDocumentAsync(blobClient, cancellationToken);
+            if (existingDocument is null)
+            {
+                throw new FileNotFoundException($"Character '{normalizedCharacterId}' was not found.");
+            }
+        }
+
+        var thumbnailBlobClient = _blobContainerClient.GetBlobClient(
+            BuildBlobName(rootPrefix, BuildEditorCharacterThumbnailRelativePath(normalizedCharacterId)));
+
+        var finalHasThumbnail = existingDocument?.HasThumbnail ?? false;
+        if (thumbnailBytes is not null)
+        {
+            await using var thumbnailStream = new MemoryStream(thumbnailBytes);
+            await thumbnailBlobClient.UploadAsync(
+                thumbnailStream,
+                new BlobUploadOptions
+                {
+                    HttpHeaders = new BlobHttpHeaders
+                    {
+                        ContentType = string.IsNullOrWhiteSpace(thumbnailContentType) ? "image/png" : thumbnailContentType
+                    }
+                },
+                cancellationToken);
+
+            finalHasThumbnail = true;
+        }
+        else if (clearThumbnail)
+        {
+            await thumbnailBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+            finalHasThumbnail = false;
+        }
+
+        var document = new StoredEditorCharacterDocument(
+            normalizedCharacterId,
+            name,
+            1,
+            (existingDocument?.Version ?? 0) + 1,
+            definition.SelectedPackId,
+            finalHasThumbnail,
+            definition);
+        var json = JsonSerializer.Serialize(document, JsonOptions);
+
+        await using (var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
+        {
+            await blobClient.UploadAsync(
+                stream,
+                new BlobUploadOptions
+                {
+                    Conditions = BuildJsonAssetWriteConditions(ifMatchEtag, createOnly),
+                    HttpHeaders = new BlobHttpHeaders
+                    {
+                        ContentType = "application/json"
+                    },
+                    Metadata = BuildEditorCharacterBlobMetadata(document)
+                },
+                cancellationToken);
+        }
+
+        var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+
+        return new UserEditorCharacterSaveResult(
+            document.Id,
+            document.Name,
+            relativeBlobPath,
+            document.HasThumbnail,
+            document.SchemaVersion,
+            document.Version,
+            document.SelectedPackId,
+            properties.Value.CreatedOn,
+            properties.Value.LastModified,
+            properties.Value.ETag.ToString(),
+            document.Definition);
+    }
+
+    public async Task<AzureBlobContent?> GetUserEditorCharacterThumbnailAsync(
+        string scopeKey,
+        string characterId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedCharacterId = NormalizeCharacterId(characterId);
+        return await GetAssetAsync(
+            _blobContainerClient,
+            BuildUserEditorCharactersRootPrefix(scopeKey),
+            BuildEditorCharacterThumbnailRelativePath(normalizedCharacterId),
+            cancellationToken);
+    }
+
+    public async Task<bool> DeleteUserEditorCharacterAsync(
+        string scopeKey,
+        string characterId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedCharacterId = NormalizeCharacterId(characterId);
+        var rootPrefix = BuildUserEditorCharactersRootPrefix(scopeKey);
+        var definitionBlobClient = _blobContainerClient.GetBlobClient(
+            BuildBlobName(rootPrefix, BuildEditorCharacterDefinitionRelativePath(normalizedCharacterId)));
+        var thumbnailBlobClient = _blobContainerClient.GetBlobClient(
+            BuildBlobName(rootPrefix, BuildEditorCharacterThumbnailRelativePath(normalizedCharacterId)));
+
+        var definitionDeleted = await definitionBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+        var thumbnailDeleted = await thumbnailBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+
+        return definitionDeleted.Value || thumbnailDeleted.Value;
+    }
+
     public async Task<UserParticleEffectListResult> ListUserFootTrailParticleEffectsAsync(
         string scopeKey,
         string? prefix,
@@ -1567,6 +1826,38 @@ public class AzureBlobProxyService
         }
     }
 
+    private async Task<UserEditorCharacterListItem?> CreateUserEditorCharacterListItemAsync(
+        BlobItem blobItem,
+        string scopeKey,
+        CancellationToken cancellationToken)
+    {
+        var rootPrefix = BuildUserEditorCharactersRootPrefix(scopeKey);
+        var relativeBlobPath = TrimPrefix(rootPrefix, blobItem.Name);
+        var blobClient = _blobContainerClient.GetBlobClient(blobItem.Name);
+
+        try
+        {
+            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
+            var document = DeserializeStoredEditorCharacterDocument(response.Value.Content.ToString());
+
+            return new UserEditorCharacterListItem(
+                document.Id,
+                document.Name,
+                relativeBlobPath,
+                document.HasThumbnail,
+                document.SchemaVersion,
+                document.Version,
+                document.SelectedPackId,
+                blobItem.Properties.CreatedOn,
+                blobItem.Properties.LastModified,
+                blobItem.Properties.ETag?.ToString());
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+    }
+
     private async Task<UserParticleEffectListItem?> CreateUserParticleEffectListItemAsync(
         BlobItem blobItem,
         string scopeKey,
@@ -1642,6 +1933,32 @@ public class AzureBlobProxyService
         return document;
     }
 
+    private async Task<StoredEditorCharacterDocument?> GetStoredEditorCharacterDocumentAsync(
+        BlobClient blobClient,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
+            return DeserializeStoredEditorCharacterDocument(response.Value.Content.ToString());
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+    }
+
+    private static StoredEditorCharacterDocument DeserializeStoredEditorCharacterDocument(string json)
+    {
+        var document = JsonSerializer.Deserialize<StoredEditorCharacterDocument>(json, JsonOptions);
+        if (document is null)
+        {
+            throw new InvalidOperationException("Character document could not be parsed.");
+        }
+
+        return document;
+    }
+
     private async Task<StoredParticleEffectDocument?> GetStoredParticleEffectDocumentAsync(
         BlobClient blobClient,
         CancellationToken cancellationToken)
@@ -1700,6 +2017,25 @@ public class AzureBlobProxyService
             ["entrycount"] = document.EntryCount.ToString(),
             ["haspreview"] = document.HasPreview ? "true" : "false"
         };
+    }
+
+    private static Dictionary<string, string> BuildEditorCharacterBlobMetadata(StoredEditorCharacterDocument document)
+    {
+        var metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["id"] = document.Id,
+            ["name"] = document.Name,
+            ["schemaversion"] = document.SchemaVersion.ToString(),
+            ["version"] = document.Version.ToString(),
+            ["hasthumbnail"] = document.HasThumbnail ? "true" : "false"
+        };
+
+        if (!string.IsNullOrWhiteSpace(document.SelectedPackId))
+        {
+            metadata["selectedpackid"] = document.SelectedPackId;
+        }
+
+        return metadata;
     }
 
     private static Dictionary<string, string> BuildParticleEffectBlobMetadata(StoredParticleEffectDocument document)
@@ -1792,6 +2128,9 @@ public class AzureBlobProxyService
     private string BuildUserPreferencesRootPrefix(string scopeKey)
         => BuildBlobName(_options.UserPreferencesPrefix, $"users/{scopeKey}");
 
+    private string BuildUserEditorCharactersRootPrefix(string scopeKey)
+        => BuildBlobName(_options.CharactersPrefix, $"users/{scopeKey}/characters");
+
     private string BuildUserStackStampsRootPrefix(string scopeKey)
         => BuildBlobName(_options.StackStampsPrefix, $"users/{scopeKey}/stack-stamps");
 
@@ -1803,6 +2142,12 @@ public class AzureBlobProxyService
 
     private static string BuildStackStampPreviewRelativePath(string stackStampId)
         => $"{stackStampId}/preview.png";
+
+    private static string BuildEditorCharacterDefinitionRelativePath(string characterId)
+        => $"{characterId}/definition.json";
+
+    private static string BuildEditorCharacterThumbnailRelativePath(string characterId)
+        => $"{characterId}/thumbnail.png";
 
     private static string BuildParticleEffectRelativePath(string particleEffectId)
         => $"{particleEffectId}.json";
@@ -1881,6 +2226,17 @@ public class AzureBlobProxyService
         if (string.IsNullOrWhiteSpace(normalized))
         {
             throw new ArgumentException("A valid stackStampId is required.", nameof(stackStampId));
+        }
+
+        return normalized;
+    }
+
+    public static string NormalizeCharacterId(string characterId)
+    {
+        var normalized = InvalidCharacterIdCharacters.Replace(characterId.Trim(), "-").Trim('-');
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            throw new ArgumentException("A valid characterId is required.", nameof(characterId));
         }
 
         return normalized;

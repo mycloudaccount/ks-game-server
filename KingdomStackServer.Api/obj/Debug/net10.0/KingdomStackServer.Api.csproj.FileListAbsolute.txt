@@ -107,3 +107,11 @@ C:\tmp\ks-character-build\KingdomStackServer.Api.deps.json
 C:\tmp\ks-character-build\KingdomStackServer.Api.runtimeconfig.json
 C:\tmp\ks-character-build\KingdomStackServer.Api.dll
 C:\tmp\ks-character-build\KingdomStackServer.Api.pdb
+C:\tmp\ks-api-build-verify\appsettings.Development.json
+C:\tmp\ks-api-build-verify\appsettings.json
+C:\tmp\ks-api-build-verify\KingdomStackServer.Api.staticwebassets.endpoints.json
+C:\tmp\ks-api-build-verify\KingdomStackServer.Api.exe
+C:\tmp\ks-api-build-verify\KingdomStackServer.Api.deps.json
+C:\tmp\ks-api-build-verify\KingdomStackServer.Api.runtimeconfig.json
+C:\tmp\ks-api-build-verify\KingdomStackServer.Api.dll
+C:\tmp\ks-api-build-verify\KingdomStackServer.Api.pdb

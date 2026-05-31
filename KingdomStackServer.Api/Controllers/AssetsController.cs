@@ -519,7 +519,12 @@ public class AssetsController : ControllerBase
         var preferences = await _azureBlobProxyService.GetUserPreferencesJsonAsync(userContext.ScopeKey, cancellationToken);
         if (preferences is null)
         {
-            return NotFound();
+            return Ok(new UserPreferencesContentResponse(
+                "preferences.json",
+                0,
+                null,
+                null,
+                CreateEmptyPreferencesJson()));
         }
 
         return Ok(new UserPreferencesContentResponse(
@@ -667,6 +672,33 @@ public class AssetsController : ControllerBase
         return deleted ? NoContent() : NotFound();
     }
 
+    [HttpGet("/api/auth/dev-session")]
+    public async Task<IActionResult> GetDevelopmentAuthSession(CancellationToken cancellationToken)
+    {
+        var hostEnvironment = HttpContext.RequestServices.GetRequiredService<IHostEnvironment>();
+        if (!hostEnvironment.IsDevelopment())
+        {
+            return NotFound();
+        }
+
+        var userContext = await _azureBlobProxyService.GetStorageUserContextAsync(cancellationToken);
+        var displayName = string.IsNullOrWhiteSpace(userContext.DisplayName)
+            ? userContext.Email ?? userContext.ScopeKey
+            : userContext.DisplayName;
+        var userDetails = userContext.Email ?? displayName;
+
+        return Ok(new
+        {
+            identityProvider = "development-azure",
+            userId = userContext.ObjectId ?? userContext.ScopeKey,
+            userDetails,
+            userRoles = new[] { "anonymous", "authenticated", "local-dev" },
+            claims = Array.Empty<object>(),
+            displayName,
+            email = userContext.Email
+        });
+    }
+
     [HttpGet("/api/assets/azure-identity")]
     public async Task<IActionResult> GetAzureStorageIdentity(CancellationToken cancellationToken)
     {
@@ -696,6 +728,12 @@ public class AssetsController : ControllerBase
         {
             Response.Headers.ETag = asset.ETag;
         }
+    }
+
+    private static JsonElement CreateEmptyPreferencesJson()
+    {
+        using var document = JsonDocument.Parse("{}");
+        return document.RootElement.Clone();
     }
 
     private static string? TryGetEmbeddedString(JsonElement element, string propertyName)
@@ -754,3 +792,4 @@ public class AssetsController : ControllerBase
             issues));
     }
 }
+

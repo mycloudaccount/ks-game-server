@@ -290,10 +290,10 @@ public sealed class CharactersController : ControllerBase
     }
 
     private string BuildLoadUrl(string characterId)
-        => $"{Request.Scheme}://{Request.Host}/api/characters/{characterId}";
+        => $"/api/characters/{characterId}";
 
     private string BuildThumbnailUrl(string characterId)
-        => $"{Request.Scheme}://{Request.Host}/api/characters/{characterId}/thumbnail";
+        => $"/api/characters/{characterId}/thumbnail";
 
     private static string? ValidateCreateOrUpdateRequest(
         string? name,

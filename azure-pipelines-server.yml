@@ -1,0 +1,106 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - dev
+      - main
+
+pool:
+  vmImage: windows-latest
+
+variables:
+  dotnet_sdk_version: "10.x"
+  prod_environment: "ks-prod"
+  azure_service_connection: "ks-prod-service-connection"
+  api_project: "KingdomStackServer.Api/KingdomStackServer.Api.csproj"
+  publish_dir: "$(Build.ArtifactStagingDirectory)\\publish"
+  zip_path: "$(Build.ArtifactStagingDirectory)\\ks-api-prod-normalized.zip"
+
+stages:
+  - stage: Validate
+    displayName: Validate Server
+    jobs:
+      - job: BuildServer
+        displayName: Build server
+        steps:
+          - task: UseDotNet@2
+            displayName: Use .NET SDK $(dotnet_sdk_version)
+            inputs:
+              packageType: sdk
+              version: $(dotnet_sdk_version)
+
+          - script: dotnet restore $(api_project)
+            displayName: Restore
+
+          - script: dotnet build $(api_project) --configuration Release --no-restore
+            displayName: Build
+
+          - script: dotnet publish $(api_project) -c Release -o "$(publish_dir)" --no-build
+            displayName: Publish
+
+          - powershell: |
+              Add-Type -AssemblyName System.IO.Compression
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              if (Test-Path "$(zip_path)") {
+                Remove-Item -LiteralPath "$(zip_path)" -Force
+              }
+
+              $zip = [System.IO.Compression.ZipFile]::Open("$(zip_path)", [System.IO.Compression.ZipArchiveMode]::Create)
+              try {
+                Get-ChildItem -LiteralPath "$(publish_dir)" -Recurse -File | ForEach-Object {
+                  $relative = $_.FullName.Substring("$(publish_dir)".Length).TrimStart('\').Replace('\', '/')
+                  [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $zip,
+                    $_.FullName,
+                    $relative,
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                  ) | Out-Null
+                }
+              }
+              finally {
+                if ($zip) {
+                  $zip.Dispose()
+                }
+              }
+            displayName: Create normalized deployment ZIP
+
+          - publish: $(zip_path)
+            artifact: api-zip
+            displayName: Publish API artifact
+
+  - stage: DeployProd
+    displayName: Deploy Server To PROD
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployApi
+        displayName: Deploy App Service
+        environment: $(prod_environment)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: api-zip
+                  displayName: Download API artifact
+
+                - task: AzureCLI@2
+                  displayName: Deploy API ZIP
+                  inputs:
+                    azureSubscription: $(azure_service_connection)
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az webapp deploy `
+                        --resource-group kingdom-stack-prod `
+                        --name ks-api-prod `
+                        --src-path "$(Pipeline.Workspace)\api-zip\ks-api-prod-normalized.zip" `
+                        --type zip
+
+                - powershell: |
+                    curl.exe -i https://orange-hill-06ad5c010.7.azurestaticapps.net/api/client-messages
+                  displayName: Smoke test linked API route

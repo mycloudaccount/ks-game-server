@@ -10,7 +10,7 @@ pr:
       - main
 
 pool:
-  vmImage: windows-latest
+  name: Default
 
 variables:
   dotnet_sdk_version: "10.x"

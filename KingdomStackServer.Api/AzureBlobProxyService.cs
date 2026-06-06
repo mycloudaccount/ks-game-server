@@ -3,7 +3,9 @@ using Azure.Core;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -31,13 +33,16 @@ public class AzureBlobProxyService
     private readonly BlobContainerClient _stackStampsBlobContainerClient;
     private readonly BlobContainerClient _particleEffectsBlobContainerClient;
     private readonly TokenCredential _credential;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
     public AzureBlobProxyService(
         IOptions<AzureBlobProxyOptions> options,
-        ILogger<AzureBlobProxyService> logger)
+        ILogger<AzureBlobProxyService> logger,
+        IHttpContextAccessor httpContextAccessor)
     {
         _options = options.Value;
         _logger = logger;
+        _httpContextAccessor = httpContextAccessor;
         _credential = CreateCredential();
         _blobContainerClient = CreateBlobContainerClient(_options.StorageBaseUrl, nameof(_options.StorageBaseUrl));
         _userGamesBlobContainerClient = CreateBlobContainerClient(
@@ -1379,6 +1384,12 @@ public class AzureBlobProxyService
 
     public async Task<StorageUserContext> GetStorageUserContextAsync(CancellationToken cancellationToken)
     {
+        var requestUserContext = TryGetRequestStorageUserContext();
+        if (requestUserContext is not null)
+        {
+            return requestUserContext;
+        }
+
         var identity = await GetStorageIdentityInfoAsync(cancellationToken);
 
         identity.Claims.TryGetValue("oid", out var objectIds);
@@ -1397,6 +1408,139 @@ public class AzureBlobProxyService
             ?? "local-dev-user";
 
         return new StorageUserContext(scopeKey, objectId, email, displayName);
+    }
+
+    private StorageUserContext? TryGetRequestStorageUserContext()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        if (httpContext is null)
+        {
+            return null;
+        }
+
+        if (TryParseSwaClientPrincipal(httpContext, out var swaUserContext))
+        {
+            return swaUserContext;
+        }
+
+        return TryBuildUserContextFromClaims(httpContext.User);
+    }
+
+    private bool TryParseSwaClientPrincipal(HttpContext httpContext, out StorageUserContext? userContext)
+    {
+        userContext = null;
+
+        if (!httpContext.Request.Headers.TryGetValue("X-MS-CLIENT-PRINCIPAL", out var headerValues))
+        {
+            return false;
+        }
+
+        var encodedPrincipal = headerValues.FirstOrDefault()?.Trim();
+        if (string.IsNullOrWhiteSpace(encodedPrincipal))
+        {
+            return false;
+        }
+
+        try
+        {
+            var payload = DecodeBase64Payload(encodedPrincipal);
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+
+            var userId = GetStringProperty(root, "userId");
+            var userDetails = GetStringProperty(root, "userDetails");
+            var displayName = userDetails;
+            string? objectId = null;
+            string? email = null;
+
+            if (root.TryGetProperty("claims", out var claimsElement) &&
+                claimsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var claimElement in claimsElement.EnumerateArray())
+                {
+                    if (claimElement.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    var claimType = GetStringProperty(claimElement, "typ");
+                    var claimValue = GetStringProperty(claimElement, "val");
+                    if (string.IsNullOrWhiteSpace(claimType) || string.IsNullOrWhiteSpace(claimValue))
+                    {
+                        continue;
+                    }
+
+                    switch (claimType)
+                    {
+                        case "oid":
+                        case "http://schemas.microsoft.com/identity/claims/objectidentifier":
+                            objectId ??= claimValue;
+                            break;
+                        case "emails":
+                        case "email":
+                        case "preferred_username":
+                        case "unique_name":
+                        case "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress":
+                            email ??= claimValue;
+                            break;
+                        case "name":
+                        case "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name":
+                            displayName ??= claimValue;
+                            break;
+                    }
+                }
+            }
+
+            var scopeKey = NormalizeScopeKey(objectId)
+                ?? NormalizeScopeKey(email)
+                ?? NormalizeScopeKey(userId)
+                ?? NormalizeScopeKey(userDetails);
+
+            if (scopeKey is null)
+            {
+                return false;
+            }
+
+            userContext = new StorageUserContext(scopeKey, objectId ?? userId, email, displayName);
+            return true;
+        }
+        catch (FormatException ex)
+        {
+            _logger.LogWarning(ex, "Could not decode X-MS-CLIENT-PRINCIPAL header.");
+            return false;
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Could not parse X-MS-CLIENT-PRINCIPAL header JSON.");
+            return false;
+        }
+    }
+
+    private StorageUserContext? TryBuildUserContextFromClaims(ClaimsPrincipal? principal)
+    {
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            return null;
+        }
+
+        var objectId = principal.FindFirstValue("oid")
+            ?? principal.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier");
+        var email = principal.FindFirstValue("email")
+            ?? principal.FindFirstValue("preferred_username")
+            ?? principal.FindFirstValue("unique_name")
+            ?? principal.FindFirstValue(ClaimTypes.Email);
+        var displayName = principal.FindFirstValue("name")
+            ?? principal.FindFirstValue(ClaimTypes.Name);
+        var userId = principal.FindFirstValue("sub")
+            ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
+        var scopeKey = NormalizeScopeKey(objectId)
+            ?? NormalizeScopeKey(email)
+            ?? NormalizeScopeKey(userId)
+            ?? NormalizeScopeKey(displayName);
+
+        return scopeKey is null
+            ? null
+            : new StorageUserContext(scopeKey, objectId ?? userId, email, displayName);
     }
 
     private async Task<ClientMessagesResponse> GetClientMessagesDocumentAsync(CancellationToken cancellationToken)
@@ -1787,6 +1931,21 @@ public class AzureBlobProxyService
         }
 
         return claims;
+    }
+
+    private static byte[] DecodeBase64Payload(string encodedValue)
+    {
+        var normalized = encodedValue
+            .Replace('-', '+')
+            .Replace('_', '/');
+
+        var remainder = normalized.Length % 4;
+        if (remainder > 0)
+        {
+            normalized = normalized.PadRight(normalized.Length + (4 - remainder), '=');
+        }
+
+        return Convert.FromBase64String(normalized);
     }
 
     private async Task<UserStackStampListItem?> CreateUserStackStampListItemAsync(

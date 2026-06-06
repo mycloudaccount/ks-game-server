@@ -6,6 +6,7 @@ const string ClientCorsPolicy = "ClientCors";
 
 builder.Services.Configure<AzureBlobProxyOptions>(
     builder.Configuration.GetSection(AzureBlobProxyOptions.SectionName));
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<AzureBlobProxyService>();
 builder.Services.AddControllers();
 builder.Services.AddSwaggerGen();

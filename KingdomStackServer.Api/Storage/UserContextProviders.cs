@@ -20,6 +20,7 @@ public sealed class IdentityOptions
     /// <summary>
     /// "AzureCredential" (default): the user is whoever owns the server's Azure credential.
     /// "Configured": a fixed local user from the settings below. Development only.
+    /// "Cognito": the user signed in through Amazon Cognito (see the "Cognito" section); all API routes require sign-in.
     /// </summary>
     public string Mode { get; set; } = IdentityModes.AzureCredential;
 
@@ -34,6 +35,7 @@ public static class IdentityModes
 {
     public const string AzureCredential = "AzureCredential";
     public const string Configured = "Configured";
+    public const string Cognito = "Cognito";
 }
 
 internal static partial class ScopeKeys

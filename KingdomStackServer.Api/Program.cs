@@ -1,5 +1,6 @@
 using Amazon.S3;
 using KingdomStackServer.Api;
+using KingdomStackServer.Api.Auth;
 using KingdomStackServer.Api.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -17,7 +18,13 @@ builder.Services.AddAWSService<IAmazonS3>();
 builder.Services.AddSingleton<BlobStoreFactory>();
 
 var identityMode = builder.Configuration[$"{IdentityOptions.SectionName}:Mode"] ?? IdentityModes.AzureCredential;
-if (string.Equals(identityMode, IdentityModes.Configured, StringComparison.OrdinalIgnoreCase))
+var useCognito = string.Equals(identityMode, IdentityModes.Cognito, StringComparison.OrdinalIgnoreCase);
+if (useCognito)
+{
+    builder.AddCognitoAuthentication();
+    builder.Services.AddSingleton<IUserContextProvider, CognitoUserContextProvider>();
+}
+else if (string.Equals(identityMode, IdentityModes.Configured, StringComparison.OrdinalIgnoreCase))
 {
     if (!builder.Environment.IsDevelopment())
     {
@@ -75,6 +82,13 @@ var app = builder.Build();
 app.UseCors(ClientCorsPolicy);
 app.UseHttpsRedirection();
 
+if (useCognito)
+{
+    app.UseAuthentication();
+    app.UseAuthorization();
+    app.MapCognitoAuthEndpoints();
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -85,7 +99,12 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.MapControllers();
+var controllers = app.MapControllers();
+if (useCognito)
+{
+    // Every data and asset route requires a signed-in user; only /api/auth/* and "/" are open.
+    controllers.RequireAuthorization();
+}
 
 app.MapGet("/", () => Results.Ok(new
 {

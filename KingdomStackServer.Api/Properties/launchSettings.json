@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "https://json.schemastore.org/launchsettings.json",
   "profiles": {
     "http": {
@@ -25,7 +25,8 @@
         "AzureBlobProxy__ClientMessagesStorageBaseUrl": "s3://kingdom-stack-dev-897154406373/editor-messages",
         "AzureBlobProxy__StackStampsStorageBaseUrl": "s3://kingdom-stack-dev-897154406373/game-assets",
         "AzureBlobProxy__ParticleEffectsStorageBaseUrl": "s3://kingdom-stack-dev-897154406373/game-assets",
-        "Identity__Mode": "Configured"
+        "Identity__Mode": "Cognito",
+        "Cognito__PublicOrigin": "http://localhost:4000"
       }
     },
     "https": {

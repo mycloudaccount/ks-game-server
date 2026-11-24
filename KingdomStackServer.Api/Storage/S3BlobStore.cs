@@ -13,6 +13,10 @@ public sealed class S3BlobStore : IBlobStore
     private const string MetadataHeaderPrefix = "x-amz-meta-";
     private const string CreatedOnMetadataKey = "createdon";
 
+    // Set only by the Azure-to-S3 migration copy, because S3 resets LastModified on every write.
+    // Normal uploads replace all metadata, so after the next real save S3's own timestamp applies again.
+    private const string MigratedLastModifiedMetadataKey = "lastmodified";
+
     private readonly IAmazonS3 _s3;
     private readonly string _bucketName;
     private readonly string _keyPrefix;
@@ -229,9 +233,12 @@ public sealed class S3BlobStore : IBlobStore
         DateTime? lastModified,
         IReadOnlyDictionary<string, string> metadata)
     {
-        var modified = lastModified is { } value
-            ? new DateTimeOffset(value.ToUniversalTime())
-            : DateTimeOffset.UtcNow;
+        var modified = metadata.TryGetValue(MigratedLastModifiedMetadataKey, out var migratedRaw)
+                       && DateTimeOffset.TryParse(migratedRaw, out var migrated)
+            ? migrated
+            : lastModified is { } value
+                ? new DateTimeOffset(value.ToUniversalTime())
+                : DateTimeOffset.UtcNow;
         var createdOn = metadata.TryGetValue(CreatedOnMetadataKey, out var createdRaw)
                         && DateTimeOffset.TryParse(createdRaw, out var parsed)
             ? parsed

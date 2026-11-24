@@ -1,4 +1,4 @@
-using Azure;
+using KingdomStackServer.Api.Storage;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 
@@ -178,7 +178,7 @@ public sealed class ParticleEffectsController : ControllerBase
                 new { particleEffectId = result.Id },
                 MapDetail(result));
         }
-        catch (RequestFailedException ex) when (ex.Status == 409 || ex.Status == 412)
+        catch (BlobConditionFailedException ex) when (ex.Status == 409 || ex.Status == 412)
         {
             return Conflict($"A {ToEffectLabel(effectType)} particle effect with this id already exists.");
         }
@@ -235,7 +235,7 @@ public sealed class ParticleEffectsController : ControllerBase
         {
             return NotFound();
         }
-        catch (RequestFailedException ex) when (ex.Status == 412)
+        catch (BlobConditionFailedException ex) when (ex.Status == 412)
         {
             return StatusCode(StatusCodes.Status412PreconditionFailed, "The particle effect was modified by another request.");
         }

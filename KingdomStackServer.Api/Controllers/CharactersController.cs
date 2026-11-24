@@ -1,4 +1,4 @@
-using Azure;
+using KingdomStackServer.Api.Storage;
 using Microsoft.AspNetCore.Mvc;
 
 namespace KingdomStackServer.Api.Controllers;
@@ -112,7 +112,7 @@ public sealed class CharactersController : ControllerBase
                 new { characterId = result.Id },
                 MapDetail(result));
         }
-        catch (RequestFailedException ex) when (ex.Status == 409 || ex.Status == 412)
+        catch (BlobConditionFailedException ex) when (ex.Status == 409 || ex.Status == 412)
         {
             return Conflict("A character with this id already exists.");
         }
@@ -183,7 +183,7 @@ public sealed class CharactersController : ControllerBase
         {
             return NotFound();
         }
-        catch (RequestFailedException ex) when (ex.Status == 412)
+        catch (BlobConditionFailedException ex) when (ex.Status == 412)
         {
             return StatusCode(StatusCodes.Status412PreconditionFailed, "The character was modified by another request.");
         }

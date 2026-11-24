@@ -1,8 +1,4 @@
-using Azure;
-using Azure.Core;
-using Azure.Identity;
-using Azure.Storage.Blobs;
-using Azure.Storage.Blobs.Models;
+using KingdomStackServer.Api.Storage;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -12,7 +8,6 @@ namespace KingdomStackServer.Api;
 public class AzureBlobProxyService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private static readonly string[] StorageScopes = ["https://storage.azure.com/.default"];
     private const string StoredFormatCanonical = "canonical";
     private const string StoredFormatLegacy = "legacy";
     private const string StoredSchemaKsGame = "ks.game";
@@ -24,52 +19,47 @@ public class AzureBlobProxyService
     private static readonly Regex InvalidParticleEffectIdCharacters = new("[^a-zA-Z0-9._-]+", RegexOptions.Compiled);
     private readonly AzureBlobProxyOptions _options;
     private readonly ILogger<AzureBlobProxyService> _logger;
-    private readonly BlobContainerClient _blobContainerClient;
-    private readonly BlobContainerClient _userGamesBlobContainerClient;
-    private readonly BlobContainerClient _userPreferencesBlobContainerClient;
-    private readonly BlobContainerClient _clientMessagesBlobContainerClient;
-    private readonly BlobContainerClient _stackStampsBlobContainerClient;
-    private readonly BlobContainerClient _particleEffectsBlobContainerClient;
-    private readonly TokenCredential _credential;
+    private readonly IUserContextProvider _userContextProvider;
+    private readonly IBlobStore _assetsStore;
+    private readonly IBlobStore _userGamesStore;
+    private readonly IBlobStore _userPreferencesStore;
+    private readonly IBlobStore _clientMessagesStore;
+    private readonly IBlobStore _stackStampsStore;
+    private readonly IBlobStore _particleEffectsStore;
 
     public AzureBlobProxyService(
         IOptions<AzureBlobProxyOptions> options,
-        ILogger<AzureBlobProxyService> logger)
+        ILogger<AzureBlobProxyService> logger,
+        BlobStoreFactory blobStoreFactory,
+        IUserContextProvider userContextProvider)
     {
         _options = options.Value;
         _logger = logger;
-        _credential = CreateCredential();
-        _blobContainerClient = CreateBlobContainerClient(_options.StorageBaseUrl, nameof(_options.StorageBaseUrl));
-        _userGamesBlobContainerClient = CreateBlobContainerClient(
+        _userContextProvider = userContextProvider;
+        _assetsStore = blobStoreFactory.Create(_options.StorageBaseUrl, nameof(_options.StorageBaseUrl));
+        _userGamesStore = blobStoreFactory.Create(
             string.IsNullOrWhiteSpace(_options.UserGamesStorageBaseUrl) ? _options.StorageBaseUrl : _options.UserGamesStorageBaseUrl,
             nameof(_options.UserGamesStorageBaseUrl));
-        _userPreferencesBlobContainerClient = CreateBlobContainerClient(
+        _userPreferencesStore = blobStoreFactory.Create(
             string.IsNullOrWhiteSpace(_options.UserPreferencesStorageBaseUrl) ? _options.StorageBaseUrl : _options.UserPreferencesStorageBaseUrl,
             nameof(_options.UserPreferencesStorageBaseUrl));
-        _clientMessagesBlobContainerClient = CreateBlobContainerClient(
+        _clientMessagesStore = blobStoreFactory.Create(
             string.IsNullOrWhiteSpace(_options.ClientMessagesStorageBaseUrl) ? _options.StorageBaseUrl : _options.ClientMessagesStorageBaseUrl,
             nameof(_options.ClientMessagesStorageBaseUrl));
-        _stackStampsBlobContainerClient = CreateBlobContainerClient(
+        _stackStampsStore = blobStoreFactory.Create(
             string.IsNullOrWhiteSpace(_options.StackStampsStorageBaseUrl) ? _options.StorageBaseUrl : _options.StackStampsStorageBaseUrl,
             nameof(_options.StackStampsStorageBaseUrl));
-        _particleEffectsBlobContainerClient = CreateBlobContainerClient(
+        _particleEffectsStore = blobStoreFactory.Create(
             string.IsNullOrWhiteSpace(_options.ParticleEffectsStorageBaseUrl) ? _options.StorageBaseUrl : _options.ParticleEffectsStorageBaseUrl,
             nameof(_options.ParticleEffectsStorageBaseUrl));
     }
 
     public async Task<string> GetTilesManifestAsync(CancellationToken cancellationToken)
     {
-        try
-        {
-            var blobClient = _blobContainerClient.GetBlobClient(BuildBlobName(_options.TilesPrefix, "tiles.json"));
-            var response = await blobClient.DownloadContentAsync(cancellationToken);
+        var blob = await _assetsStore.DownloadAsync(BuildBlobName(_options.TilesPrefix, "tiles.json"), cancellationToken);
 
-            return response.Value.Content.ToString();
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
-        {
-            throw new FileNotFoundException("tiles.json was not found in Azure blob storage.", ex);
-        }
+        return blob?.Content.ToString()
+            ?? throw new FileNotFoundException("tiles.json was not found in blob storage.");
     }
 
     public async Task<TileManifest> GetTileManifestModelAsync(CancellationToken cancellationToken)
@@ -110,7 +100,7 @@ public class AzureBlobProxyService
         string blobPath,
         CancellationToken cancellationToken)
         => await GetAssetAsync(
-            _userGamesBlobContainerClient,
+            _userGamesStore,
             BuildUserGamesRootPrefix(scopeKey),
             blobPath,
             cancellationToken);
@@ -119,32 +109,28 @@ public class AzureBlobProxyService
         string prefix,
         string blobPath,
         CancellationToken cancellationToken)
-        => await GetAssetAsync(_blobContainerClient, prefix, blobPath, cancellationToken);
+        => await GetAssetAsync(_assetsStore, prefix, blobPath, cancellationToken);
 
-    public async Task<AzureBlobContent?> GetAssetAsync(
-        BlobContainerClient containerClient,
+    private static async Task<AzureBlobContent?> GetAssetAsync(
+        IBlobStore store,
         string prefix,
         string blobPath,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var blobClient = containerClient.GetBlobClient(BuildBlobName(prefix, blobPath));
-            var response = await blobClient.DownloadStreamingAsync(cancellationToken: cancellationToken);
-
-            return new AzureBlobContent
-            {
-                Content = response.Value.Content,
-                ContentType = response.Value.Details.ContentType ?? "application/octet-stream",
-                ContentLength = response.Value.Details.ContentLength,
-                ETag = response.Value.Details.ETag.ToString(),
-                LastModified = response.Value.Details.LastModified
-            };
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await store.OpenReadAsync(BuildBlobName(prefix, blobPath), cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        return new AzureBlobContent
+        {
+            Content = blob.Content,
+            ContentType = blob.Properties.ContentType ?? "application/octet-stream",
+            ContentLength = blob.Properties.ContentLength,
+            ETag = blob.Properties.ETag,
+            LastModified = blob.Properties.LastModified
+        };
     }
 
     public async Task<IReadOnlyList<TileAssetListItem>> ListTileAssetsAsync(
@@ -175,11 +161,7 @@ public class AzureBlobProxyService
         var items = new List<TileAssetListItem>();
         var requestedPrefix = BuildBlobName(rootPrefix, prefix);
 
-        await foreach (var blobItem in _blobContainerClient.GetBlobsAsync(
-                           traits: BlobTraits.None,
-                           states: BlobStates.None,
-                           prefix: requestedPrefix,
-                           cancellationToken: cancellationToken))
+        await foreach (var blobItem in _assetsStore.ListAllAsync(requestedPrefix, includeMetadata: false, cancellationToken))
         {
             var relativeName = TrimPrefix(rootPrefix, blobItem.Name);
             if (string.IsNullOrWhiteSpace(relativeName))
@@ -189,8 +171,8 @@ public class AzureBlobProxyService
 
             items.Add(new TileAssetListItem(
                 relativeName,
-                blobItem.Properties.ContentLength,
-                blobItem.Properties.LastModified));
+                blobItem.ContentLength,
+                blobItem.LastModified));
         }
 
         return items;
@@ -205,29 +187,18 @@ public class AzureBlobProxyService
     {
         var normalizedBlobPath = NormalizeBlobPath(blobPath);
         var blobName = BuildBlobName(BuildUserGamesRootPrefix(scopeKey), normalizedBlobPath);
-        var blobClient = _userGamesBlobContainerClient.GetBlobClient(blobName);
-
-        await blobClient.UploadAsync(
+        var properties = await _userGamesStore.UploadAsync(
+            blobName,
             content,
-            new BlobUploadOptions
-            {
-                HttpHeaders = new BlobHttpHeaders
-                {
-                    ContentType = string.IsNullOrWhiteSpace(contentType)
-                        ? "application/octet-stream"
-                        : contentType
-                }
-            },
+            new BlobWriteOptions(string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType),
             cancellationToken);
-
-        var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
 
         return new BlobUploadResult(
             normalizedBlobPath,
-            blobClient.Uri.ToString(),
-            properties.Value.ETag.ToString(),
-            properties.Value.ContentLength,
-            properties.Value.LastModified);
+            _userGamesStore.GetUri(blobName),
+            properties.ETag,
+            properties.ContentLength,
+            properties.LastModified);
     }
 
     public async Task<IReadOnlyList<UserGameMetadataResponse>> ListUserGameAssetsAsync(
@@ -239,11 +210,7 @@ public class AzureBlobProxyService
         var requestedPrefix = BuildBlobName(userRootPrefix, prefix);
         var items = new List<UserGameMetadataResponse>();
 
-        await foreach (var blobItem in _userGamesBlobContainerClient.GetBlobsAsync(
-                           traits: BlobTraits.Metadata,
-                           states: BlobStates.None,
-                           prefix: requestedPrefix,
-                           cancellationToken: cancellationToken))
+        await foreach (var blobItem in _userGamesStore.ListAllAsync(requestedPrefix, includeMetadata: true, cancellationToken))
         {
             var relativeBlobPath = TrimPrefix(userRootPrefix, blobItem.Name);
             if (string.IsNullOrWhiteSpace(relativeBlobPath))
@@ -266,9 +233,9 @@ public class AzureBlobProxyService
                 relativeBlobPath,
                 string.Empty,
                 string.Empty,
-                blobItem.Properties.CreatedOn,
-                blobItem.Properties.LastModified,
-                blobItem.Properties.ContentLength,
+                blobItem.CreatedOn,
+                blobItem.LastModified,
+                blobItem.ContentLength,
                 string.IsNullOrWhiteSpace(storedFormat) ? null : storedFormat,
                 string.IsNullOrWhiteSpace(storedSchema) ? null : storedSchema,
                 storedVersion));
@@ -293,7 +260,6 @@ public class AzureBlobProxyService
         var normalizedGameId = NormalizeGameId(gameId);
         var relativeBlobPath = $"{normalizedGameId}.json";
         var blobName = BuildBlobName(BuildUserGamesRootPrefix(scopeKey), relativeBlobPath);
-        var blobClient = _userGamesBlobContainerClient.GetBlobClient(blobName);
         var metadata = BuildGameBlobMetadata(
             normalizedGameId,
             name,
@@ -304,53 +270,39 @@ public class AzureBlobProxyService
         try
         {
             _logger.LogInformation(
-                "Saving user game to blob storage. ScopeKey={ScopeKey}, GameId={GameId}, BlobName={BlobName}, Container={ContainerUri}, Credential={CredentialType}, StoredFormat={StoredFormat}, StoredSchema={StoredSchema}, StoredVersion={StoredVersion}",
+                "Saving user game to blob storage. ScopeKey={ScopeKey}, GameId={GameId}, BlobName={BlobName}, Container={ContainerUri}, StoredFormat={StoredFormat}, StoredSchema={StoredSchema}, StoredVersion={StoredVersion}",
                 scopeKey,
                 normalizedGameId,
                 blobName,
-                _userGamesBlobContainerClient.Uri,
-                _credential.GetType().Name,
+                _userGamesStore.Location,
                 storedFormat,
                 storedSchema,
                 storedVersion);
 
-            await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(jsonContent));
-            await blobClient.UploadAsync(
-                stream,
-                new BlobUploadOptions
-                {
-                    HttpHeaders = new BlobHttpHeaders
-                    {
-                        ContentType = "application/json"
-                    },
-                    Metadata = metadata
-                },
+            var properties = await _userGamesStore.UploadAsync(
+                blobName,
+                jsonContent,
+                new BlobWriteOptions("application/json", metadata),
                 cancellationToken);
-
-            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
 
             return new UserGameSaveResult(
                 normalizedGameId,
                 name,
                 relativeBlobPath,
-                blobClient.Uri.ToString(),
-                properties.Value.CreatedOn,
-                properties.Value.LastModified,
-                properties.Value.ContentLength);
+                _userGamesStore.GetUri(blobName),
+                properties.CreatedOn,
+                properties.LastModified,
+                properties.ContentLength);
         }
-        catch (RequestFailedException ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(
                 ex,
-                "Failed to save user game blob. ScopeKey={ScopeKey}, GameId={GameId}, BlobName={BlobName}, BlobUri={BlobUri}, Container={ContainerUri}, Credential={CredentialType}, Status={Status}, ErrorCode={ErrorCode}",
+                "Failed to save user game blob. ScopeKey={ScopeKey}, GameId={GameId}, BlobName={BlobName}, Container={ContainerUri}",
                 scopeKey,
                 normalizedGameId,
                 blobName,
-                blobClient.Uri,
-                _userGamesBlobContainerClient.Uri,
-                _credential.GetType().Name,
-                ex.Status,
-                ex.ErrorCode);
+                _userGamesStore.Location);
             throw;
         }
     }
@@ -362,29 +314,18 @@ public class AzureBlobProxyService
     {
         var relativeBlobPath = "preferences.json";
         var blobName = BuildBlobName(BuildUserPreferencesRootPrefix(scopeKey), relativeBlobPath);
-        var blobClient = _userPreferencesBlobContainerClient.GetBlobClient(blobName);
-
-        await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(jsonContent));
-        await blobClient.UploadAsync(
-            stream,
-            overwrite: true,
-            cancellationToken: cancellationToken);
-
-        await blobClient.SetHttpHeadersAsync(
-            new BlobHttpHeaders
-            {
-                ContentType = "application/json"
-            },
-            cancellationToken: cancellationToken);
-
-        var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+        var properties = await _userPreferencesStore.UploadAsync(
+            blobName,
+            jsonContent,
+            new BlobWriteOptions("application/json"),
+            cancellationToken);
 
         return new UserPreferencesSaveResult(
             relativeBlobPath,
-            blobClient.Uri.ToString(),
-            properties.Value.CreatedOn,
-            properties.Value.LastModified,
-            properties.Value.ContentLength);
+            _userPreferencesStore.GetUri(blobName),
+            properties.CreatedOn,
+            properties.LastModified,
+            properties.ContentLength);
     }
 
     public async Task<UserPreferencesContentResponse?> GetUserPreferencesJsonAsync(
@@ -393,26 +334,20 @@ public class AzureBlobProxyService
     {
         var relativeBlobPath = "preferences.json";
         var blobName = BuildBlobName(BuildUserPreferencesRootPrefix(scopeKey), relativeBlobPath);
-        var blobClient = _userPreferencesBlobContainerClient.GetBlobClient(blobName);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-            var content = response.Value.Content.ToString();
-            using var document = JsonDocument.Parse(content);
-
-            return new UserPreferencesContentResponse(
-                relativeBlobPath,
-                properties.Value.ContentLength,
-                properties.Value.CreatedOn,
-                properties.Value.LastModified,
-                document.RootElement.Clone());
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _userPreferencesStore.DownloadAsync(blobName, cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        using var document = JsonDocument.Parse(blob.Content.ToString());
+
+        return new UserPreferencesContentResponse(
+            relativeBlobPath,
+            blob.Properties.ContentLength,
+            blob.Properties.CreatedOn,
+            blob.Properties.LastModified,
+            document.RootElement.Clone());
     }
 
     public async Task<bool> DeleteUserPreferencesAsync(
@@ -421,10 +356,7 @@ public class AzureBlobProxyService
     {
         var relativeBlobPath = "preferences.json";
         var blobName = BuildBlobName(BuildUserPreferencesRootPrefix(scopeKey), relativeBlobPath);
-        var blobClient = _userPreferencesBlobContainerClient.GetBlobClient(blobName);
-        var response = await blobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-
-        return response.Value;
+        return await _userPreferencesStore.DeleteIfExistsAsync(blobName, cancellationToken);
     }
 
     public async Task<ClientMessagesResponse> GetClientMessagesAsync(
@@ -507,47 +439,42 @@ public class AzureBlobProxyService
         var normalizedGameId = NormalizeGameId(gameId);
         var relativeBlobPath = $"{normalizedGameId}.json";
         var blobName = BuildBlobName(BuildUserGamesRootPrefix(scopeKey), relativeBlobPath);
-        var blobClient = _userGamesBlobContainerClient.GetBlobClient(blobName);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-            var content = response.Value.Content.ToString();
-            using var document = JsonDocument.Parse(content);
-            var payload = document.RootElement.Clone();
-
-            properties.Value.Metadata.TryGetValue("name", out var name);
-            properties.Value.Metadata.TryGetValue("format", out var storedFormatRaw);
-            properties.Value.Metadata.TryGetValue("schema", out var storedSchemaRaw);
-            properties.Value.Metadata.TryGetValue("schemaversion", out var storedVersionRaw);
-            var resolvedFormat = ResolveStoredGameFormat(storedFormatRaw, payload);
-            var resolvedSchema = string.IsNullOrWhiteSpace(storedSchemaRaw)
-                ? (resolvedFormat == StoredFormatCanonical ? StoredSchemaKsGame : null)
-                : storedSchemaRaw;
-            var resolvedVersion = TryParseNullableInt(storedVersionRaw);
-            var asDocument = resolvedFormat == StoredFormatCanonical ? payload : (JsonElement?)null;
-            var asGame = resolvedFormat == StoredFormatLegacy ? payload : (JsonElement?)null;
-
-            return new UserGameContentResponse(
-                normalizedGameId,
-                string.IsNullOrWhiteSpace(name) ? normalizedGameId : name,
-                relativeBlobPath,
-                properties.Value.ContentLength,
-                properties.Value.CreatedOn,
-                string.Empty,
-                string.Empty,
-                properties.Value.LastModified,
-                resolvedFormat,
-                resolvedSchema,
-                resolvedVersion,
-                asDocument,
-                asGame);
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _userGamesStore.DownloadAsync(blobName, cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        var properties = blob.Properties;
+        using var document = JsonDocument.Parse(blob.Content.ToString());
+        var payload = document.RootElement.Clone();
+
+        properties.Metadata.TryGetValue("name", out var name);
+        properties.Metadata.TryGetValue("format", out var storedFormatRaw);
+        properties.Metadata.TryGetValue("schema", out var storedSchemaRaw);
+        properties.Metadata.TryGetValue("schemaversion", out var storedVersionRaw);
+        var resolvedFormat = ResolveStoredGameFormat(storedFormatRaw, payload);
+        var resolvedSchema = string.IsNullOrWhiteSpace(storedSchemaRaw)
+            ? (resolvedFormat == StoredFormatCanonical ? StoredSchemaKsGame : null)
+            : storedSchemaRaw;
+        var resolvedVersion = TryParseNullableInt(storedVersionRaw);
+        var asDocument = resolvedFormat == StoredFormatCanonical ? payload : (JsonElement?)null;
+        var asGame = resolvedFormat == StoredFormatLegacy ? payload : (JsonElement?)null;
+
+        return new UserGameContentResponse(
+            normalizedGameId,
+            string.IsNullOrWhiteSpace(name) ? normalizedGameId : name,
+            relativeBlobPath,
+            properties.ContentLength,
+            properties.CreatedOn,
+            string.Empty,
+            string.Empty,
+            properties.LastModified,
+            resolvedFormat,
+            resolvedSchema,
+            resolvedVersion,
+            asDocument,
+            asGame);
     }
 
     public async Task<bool> DeleteUserGameAsync(
@@ -558,10 +485,7 @@ public class AzureBlobProxyService
         var normalizedGameId = NormalizeGameId(gameId);
         var relativeBlobPath = $"{normalizedGameId}.json";
         var blobName = BuildBlobName(BuildUserGamesRootPrefix(scopeKey), relativeBlobPath);
-        var blobClient = _userGamesBlobContainerClient.GetBlobClient(blobName);
-        var response = await blobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-
-        return response.Value;
+        return await _userGamesStore.DeleteIfExistsAsync(blobName, cancellationToken);
     }
 
     public async Task<UserStackStampListResult> ListUserStackStampsAsync(
@@ -582,15 +506,11 @@ public class AzureBlobProxyService
             : BuildBlobName(BuildUserStackStampsRootPrefix(scopeKey), normalizedPrefix);
 
         var items = new List<UserStackStampListItem>(pageSize);
-        var pageable = _stackStampsBlobContainerClient.GetBlobsAsync(
-            traits: BlobTraits.Metadata,
-            states: BlobStates.None,
-            prefix: blobPrefix,
-            cancellationToken: cancellationToken);
-
-        await foreach (var page in pageable.AsPages(continuationToken, pageSizeHint: pageSize))
+        var pageToken = continuationToken;
+        while (true)
         {
-            foreach (var blobItem in page.Values)
+            var page = await _stackStampsStore.ListPageAsync(blobPrefix, includeMetadata: false, pageSize, pageToken, cancellationToken);
+            foreach (var blobItem in page.Items)
             {
                 if (!blobItem.Name.EndsWith("/definition.json", StringComparison.OrdinalIgnoreCase))
                 {
@@ -615,9 +535,9 @@ public class AzureBlobProxyService
             {
                 return new UserStackStampListResult(items, null);
             }
-        }
 
-        return new UserStackStampListResult(items, null);
+            pageToken = page.ContinuationToken;
+        }
     }
 
     public async Task<bool> UserStackStampNameExistsAsync(
@@ -632,11 +552,7 @@ public class AzureBlobProxyService
             ? null
             : NormalizeStackStampId(excludeStackStampId);
 
-        await foreach (var blobItem in _stackStampsBlobContainerClient.GetBlobsAsync(
-                           traits: BlobTraits.Metadata,
-                           states: BlobStates.None,
-                           prefix: rootPrefix,
-                           cancellationToken: cancellationToken))
+        await foreach (var blobItem in _stackStampsStore.ListAllAsync(rootPrefix, includeMetadata: false, cancellationToken))
         {
             if (!blobItem.Name.EndsWith("/definition.json", StringComparison.OrdinalIgnoreCase))
             {
@@ -672,32 +588,28 @@ public class AzureBlobProxyService
         var normalizedStackStampId = NormalizeStackStampId(stackStampId);
         var relativeBlobPath = BuildStackStampDefinitionRelativePath(normalizedStackStampId);
         var blobName = BuildBlobName(BuildUserStackStampsRootPrefix(scopeKey), relativeBlobPath);
-        var blobClient = _stackStampsBlobContainerClient.GetBlobClient(blobName);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-            var document = DeserializeStoredStackStampDocument(response.Value.Content.ToString());
-
-            return new UserStackStampContent(
-                document.Id,
-                document.Name,
-                document.Description,
-                relativeBlobPath,
-                document.HasPreview,
-                document.SchemaVersion,
-                document.Version,
-                document.Tags,
-                properties.Value.CreatedOn,
-                properties.Value.LastModified,
-                properties.Value.ETag.ToString(),
-                document.Definition);
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _stackStampsStore.DownloadAsync(blobName, cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        var properties = blob.Properties;
+        var document = DeserializeStoredStackStampDocument(blob.Content.ToString());
+
+        return new UserStackStampContent(
+            document.Id,
+            document.Name,
+            document.Description,
+            relativeBlobPath,
+            document.HasPreview,
+            document.SchemaVersion,
+            document.Version,
+            document.Tags,
+            properties.CreatedOn,
+            properties.LastModified,
+            properties.ETag,
+            document.Definition);
     }
 
     public async Task<UserStackStampSaveResult> SaveUserStackStampAsync(
@@ -718,42 +630,33 @@ public class AzureBlobProxyService
         var relativeBlobPath = BuildStackStampDefinitionRelativePath(normalizedStackStampId);
         var rootPrefix = BuildUserStackStampsRootPrefix(scopeKey);
         var blobName = BuildBlobName(rootPrefix, relativeBlobPath);
-        var blobClient = _stackStampsBlobContainerClient.GetBlobClient(blobName);
-
         StoredStackStampDocument? existingDocument = null;
         if (!createOnly)
         {
-            existingDocument = await GetStoredStackStampDocumentAsync(blobClient, cancellationToken);
+            existingDocument = await GetStoredStackStampDocumentAsync(_stackStampsStore, blobName, cancellationToken);
             if (existingDocument is null)
             {
                 throw new FileNotFoundException($"Stack stamp '{normalizedStackStampId}' was not found.");
             }
         }
 
-        var requestConditions = BuildStackStampWriteConditions(ifMatchEtag, createOnly);
-        var previewBlobClient = _stackStampsBlobContainerClient.GetBlobClient(
-            BuildBlobName(rootPrefix, BuildStackStampPreviewRelativePath(normalizedStackStampId)));
+        EnsureWriteConditionIsValid(ifMatchEtag, createOnly);
+        var previewBlobName = BuildBlobName(rootPrefix, BuildStackStampPreviewRelativePath(normalizedStackStampId));
 
         var finalHasPreview = existingDocument?.HasPreview ?? false;
         if (previewBytes is not null)
         {
-            await using var previewStream = new MemoryStream(previewBytes);
-            await previewBlobClient.UploadAsync(
-                previewStream,
-                new BlobUploadOptions
-                {
-                    HttpHeaders = new BlobHttpHeaders
-                    {
-                        ContentType = string.IsNullOrWhiteSpace(previewContentType) ? "image/png" : previewContentType
-                    }
-                },
+            await _stackStampsStore.UploadAsync(
+                previewBlobName,
+                previewBytes,
+                new BlobWriteOptions(string.IsNullOrWhiteSpace(previewContentType) ? "image/png" : previewContentType),
                 cancellationToken);
 
             finalHasPreview = true;
         }
         else if (clearPreview)
         {
-            await previewBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+            await _stackStampsStore.DeleteIfExistsAsync(previewBlobName, cancellationToken);
             finalHasPreview = false;
         }
 
@@ -767,24 +670,11 @@ public class AzureBlobProxyService
             finalHasPreview);
 
         var json = JsonSerializer.Serialize(document, JsonOptions);
-
-        await using (var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
-        {
-            await blobClient.UploadAsync(
-                stream,
-                new BlobUploadOptions
-                {
-                    Conditions = requestConditions,
-                    HttpHeaders = new BlobHttpHeaders
-                    {
-                        ContentType = "application/json"
-                    },
-                    Metadata = BuildStackStampBlobMetadata(document)
-                },
-                cancellationToken);
-        }
-
-        var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+        var properties = await _stackStampsStore.UploadAsync(
+            blobName,
+            json,
+            BuildConditionalJsonWriteOptions(BuildStackStampBlobMetadata(document), ifMatchEtag, createOnly),
+            cancellationToken);
 
         return new UserStackStampSaveResult(
             document.Id,
@@ -795,9 +685,9 @@ public class AzureBlobProxyService
             document.SchemaVersion,
             document.Version,
             document.Tags,
-            properties.Value.CreatedOn,
-            properties.Value.LastModified,
-            properties.Value.ETag.ToString(),
+            properties.CreatedOn,
+            properties.LastModified,
+            properties.ETag,
             document.Definition);
     }
 
@@ -808,7 +698,7 @@ public class AzureBlobProxyService
     {
         var normalizedStackStampId = NormalizeStackStampId(stackStampId);
         return await GetAssetAsync(
-            _stackStampsBlobContainerClient,
+            _stackStampsStore,
             BuildUserStackStampsRootPrefix(scopeKey),
             BuildStackStampPreviewRelativePath(normalizedStackStampId),
             cancellationToken);
@@ -821,15 +711,15 @@ public class AzureBlobProxyService
     {
         var normalizedStackStampId = NormalizeStackStampId(stackStampId);
         var rootPrefix = BuildUserStackStampsRootPrefix(scopeKey);
-        var definitionBlobClient = _stackStampsBlobContainerClient.GetBlobClient(
-            BuildBlobName(rootPrefix, BuildStackStampDefinitionRelativePath(normalizedStackStampId)));
-        var previewBlobClient = _stackStampsBlobContainerClient.GetBlobClient(
-            BuildBlobName(rootPrefix, BuildStackStampPreviewRelativePath(normalizedStackStampId)));
 
-        var definitionDeleted = await definitionBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-        var previewDeleted = await previewBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+        var definitionDeleted = await _stackStampsStore.DeleteIfExistsAsync(
+            BuildBlobName(rootPrefix, BuildStackStampDefinitionRelativePath(normalizedStackStampId)),
+            cancellationToken);
+        var previewDeleted = await _stackStampsStore.DeleteIfExistsAsync(
+            BuildBlobName(rootPrefix, BuildStackStampPreviewRelativePath(normalizedStackStampId)),
+            cancellationToken);
 
-        return definitionDeleted.Value || previewDeleted.Value;
+        return definitionDeleted || previewDeleted;
     }
 
     public async Task<UserEditorCharacterListResult> ListUserEditorCharactersAsync(
@@ -846,15 +736,11 @@ public class AzureBlobProxyService
             ? rootPrefix
             : BuildBlobName(rootPrefix, normalizedPrefix);
         var items = new List<UserEditorCharacterListItem>(pageSize);
-        var pageable = _blobContainerClient.GetBlobsAsync(
-            traits: BlobTraits.Metadata,
-            states: BlobStates.None,
-            prefix: blobPrefix,
-            cancellationToken: cancellationToken);
-
-        await foreach (var page in pageable.AsPages(continuationToken, pageSizeHint: pageSize))
+        var pageToken = continuationToken;
+        while (true)
         {
-            foreach (var blobItem in page.Values)
+            var page = await _assetsStore.ListPageAsync(blobPrefix, includeMetadata: false, pageSize, pageToken, cancellationToken);
+            foreach (var blobItem in page.Items)
             {
                 if (!blobItem.Name.EndsWith("/definition.json", StringComparison.OrdinalIgnoreCase))
                 {
@@ -879,9 +765,9 @@ public class AzureBlobProxyService
             {
                 return new UserEditorCharacterListResult(items, null);
             }
-        }
 
-        return new UserEditorCharacterListResult(items, null);
+            pageToken = page.ContinuationToken;
+        }
     }
 
     public async Task<bool> UserEditorCharacterNameExistsAsync(
@@ -896,11 +782,7 @@ public class AzureBlobProxyService
             ? null
             : NormalizeCharacterId(excludeCharacterId);
 
-        await foreach (var blobItem in _blobContainerClient.GetBlobsAsync(
-                           traits: BlobTraits.Metadata,
-                           states: BlobStates.None,
-                           prefix: rootPrefix,
-                           cancellationToken: cancellationToken))
+        await foreach (var blobItem in _assetsStore.ListAllAsync(rootPrefix, includeMetadata: false, cancellationToken))
         {
             if (!blobItem.Name.EndsWith("/definition.json", StringComparison.OrdinalIgnoreCase))
             {
@@ -936,31 +818,27 @@ public class AzureBlobProxyService
         var normalizedCharacterId = NormalizeCharacterId(characterId);
         var relativeBlobPath = BuildEditorCharacterDefinitionRelativePath(normalizedCharacterId);
         var blobName = BuildBlobName(BuildUserEditorCharactersRootPrefix(scopeKey), relativeBlobPath);
-        var blobClient = _blobContainerClient.GetBlobClient(blobName);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-            var document = DeserializeStoredEditorCharacterDocument(response.Value.Content.ToString());
-
-            return new UserEditorCharacterContent(
-                document.Id,
-                document.Name,
-                relativeBlobPath,
-                document.HasThumbnail,
-                document.SchemaVersion,
-                document.Version,
-                document.SelectedPackId,
-                properties.Value.CreatedOn,
-                properties.Value.LastModified,
-                properties.Value.ETag.ToString(),
-                document.Definition);
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _assetsStore.DownloadAsync(blobName, cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        var properties = blob.Properties;
+        var document = DeserializeStoredEditorCharacterDocument(blob.Content.ToString());
+
+        return new UserEditorCharacterContent(
+            document.Id,
+            document.Name,
+            relativeBlobPath,
+            document.HasThumbnail,
+            document.SchemaVersion,
+            document.Version,
+            document.SelectedPackId,
+            properties.CreatedOn,
+            properties.LastModified,
+            properties.ETag,
+            document.Definition);
     }
 
     public async Task<UserEditorCharacterSaveResult> SaveUserEditorCharacterAsync(
@@ -979,41 +857,32 @@ public class AzureBlobProxyService
         var relativeBlobPath = BuildEditorCharacterDefinitionRelativePath(normalizedCharacterId);
         var rootPrefix = BuildUserEditorCharactersRootPrefix(scopeKey);
         var blobName = BuildBlobName(rootPrefix, relativeBlobPath);
-        var blobClient = _blobContainerClient.GetBlobClient(blobName);
-
         StoredEditorCharacterDocument? existingDocument = null;
         if (!createOnly)
         {
-            existingDocument = await GetStoredEditorCharacterDocumentAsync(blobClient, cancellationToken);
+            existingDocument = await GetStoredEditorCharacterDocumentAsync(_assetsStore, blobName, cancellationToken);
             if (existingDocument is null)
             {
                 throw new FileNotFoundException($"Character '{normalizedCharacterId}' was not found.");
             }
         }
 
-        var thumbnailBlobClient = _blobContainerClient.GetBlobClient(
-            BuildBlobName(rootPrefix, BuildEditorCharacterThumbnailRelativePath(normalizedCharacterId)));
+        var thumbnailBlobName = BuildBlobName(rootPrefix, BuildEditorCharacterThumbnailRelativePath(normalizedCharacterId));
 
         var finalHasThumbnail = existingDocument?.HasThumbnail ?? false;
         if (thumbnailBytes is not null)
         {
-            await using var thumbnailStream = new MemoryStream(thumbnailBytes);
-            await thumbnailBlobClient.UploadAsync(
-                thumbnailStream,
-                new BlobUploadOptions
-                {
-                    HttpHeaders = new BlobHttpHeaders
-                    {
-                        ContentType = string.IsNullOrWhiteSpace(thumbnailContentType) ? "image/png" : thumbnailContentType
-                    }
-                },
+            await _assetsStore.UploadAsync(
+                thumbnailBlobName,
+                thumbnailBytes,
+                new BlobWriteOptions(string.IsNullOrWhiteSpace(thumbnailContentType) ? "image/png" : thumbnailContentType),
                 cancellationToken);
 
             finalHasThumbnail = true;
         }
         else if (clearThumbnail)
         {
-            await thumbnailBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+            await _assetsStore.DeleteIfExistsAsync(thumbnailBlobName, cancellationToken);
             finalHasThumbnail = false;
         }
 
@@ -1026,24 +895,11 @@ public class AzureBlobProxyService
             finalHasThumbnail,
             definition);
         var json = JsonSerializer.Serialize(document, JsonOptions);
-
-        await using (var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
-        {
-            await blobClient.UploadAsync(
-                stream,
-                new BlobUploadOptions
-                {
-                    Conditions = BuildJsonAssetWriteConditions(ifMatchEtag, createOnly),
-                    HttpHeaders = new BlobHttpHeaders
-                    {
-                        ContentType = "application/json"
-                    },
-                    Metadata = BuildEditorCharacterBlobMetadata(document)
-                },
-                cancellationToken);
-        }
-
-        var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+        var properties = await _assetsStore.UploadAsync(
+            blobName,
+            json,
+            BuildConditionalJsonWriteOptions(BuildEditorCharacterBlobMetadata(document), ifMatchEtag, createOnly),
+            cancellationToken);
 
         return new UserEditorCharacterSaveResult(
             document.Id,
@@ -1053,9 +909,9 @@ public class AzureBlobProxyService
             document.SchemaVersion,
             document.Version,
             document.SelectedPackId,
-            properties.Value.CreatedOn,
-            properties.Value.LastModified,
-            properties.Value.ETag.ToString(),
+            properties.CreatedOn,
+            properties.LastModified,
+            properties.ETag,
             document.Definition);
     }
 
@@ -1066,7 +922,7 @@ public class AzureBlobProxyService
     {
         var normalizedCharacterId = NormalizeCharacterId(characterId);
         return await GetAssetAsync(
-            _blobContainerClient,
+            _assetsStore,
             BuildUserEditorCharactersRootPrefix(scopeKey),
             BuildEditorCharacterThumbnailRelativePath(normalizedCharacterId),
             cancellationToken);
@@ -1079,15 +935,15 @@ public class AzureBlobProxyService
     {
         var normalizedCharacterId = NormalizeCharacterId(characterId);
         var rootPrefix = BuildUserEditorCharactersRootPrefix(scopeKey);
-        var definitionBlobClient = _blobContainerClient.GetBlobClient(
-            BuildBlobName(rootPrefix, BuildEditorCharacterDefinitionRelativePath(normalizedCharacterId)));
-        var thumbnailBlobClient = _blobContainerClient.GetBlobClient(
-            BuildBlobName(rootPrefix, BuildEditorCharacterThumbnailRelativePath(normalizedCharacterId)));
 
-        var definitionDeleted = await definitionBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-        var thumbnailDeleted = await thumbnailBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+        var definitionDeleted = await _assetsStore.DeleteIfExistsAsync(
+            BuildBlobName(rootPrefix, BuildEditorCharacterDefinitionRelativePath(normalizedCharacterId)),
+            cancellationToken);
+        var thumbnailDeleted = await _assetsStore.DeleteIfExistsAsync(
+            BuildBlobName(rootPrefix, BuildEditorCharacterThumbnailRelativePath(normalizedCharacterId)),
+            cancellationToken);
 
-        return definitionDeleted.Value || thumbnailDeleted.Value;
+        return definitionDeleted || thumbnailDeleted;
     }
 
     public async Task<UserParticleEffectListResult> ListUserFootTrailParticleEffectsAsync(
@@ -1133,15 +989,11 @@ public class AzureBlobProxyService
             ? rootPrefix
             : BuildBlobName(rootPrefix, normalizedPrefix);
         var items = new List<UserParticleEffectListItem>(pageSize);
-        var pageable = _particleEffectsBlobContainerClient.GetBlobsAsync(
-            traits: BlobTraits.Metadata,
-            states: BlobStates.None,
-            prefix: blobPrefix,
-            cancellationToken: cancellationToken);
-
-        await foreach (var page in pageable.AsPages(continuationToken, pageSizeHint: pageSize))
+        var pageToken = continuationToken;
+        while (true)
         {
-            foreach (var blobItem in page.Values)
+            var page = await _particleEffectsStore.ListPageAsync(blobPrefix, includeMetadata: false, pageSize, pageToken, cancellationToken);
+            foreach (var blobItem in page.Items)
             {
                 if (!blobItem.Name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
                 {
@@ -1166,9 +1018,9 @@ public class AzureBlobProxyService
             {
                 return new UserParticleEffectListResult(items, null);
             }
-        }
 
-        return new UserParticleEffectListResult(items, null);
+            pageToken = page.ContinuationToken;
+        }
     }
 
     public async Task<UserParticleEffectContent?> GetUserFootTrailParticleEffectAsync(
@@ -1200,30 +1052,26 @@ public class AzureBlobProxyService
         var normalizedParticleEffectId = NormalizeParticleEffectId(particleEffectId);
         var relativeBlobPath = BuildParticleEffectRelativePath(normalizedParticleEffectId);
         var blobName = BuildBlobName(BuildUserParticleEffectsRootPrefix(scopeKey, effectType), relativeBlobPath);
-        var blobClient = _particleEffectsBlobContainerClient.GetBlobClient(blobName);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-            var document = DeserializeStoredParticleEffectDocument(response.Value.Content.ToString());
-
-            return new UserParticleEffectContent(
-                document.Id,
-                document.Name,
-                document.Type,
-                relativeBlobPath,
-                document.SchemaVersion,
-                document.Version,
-                properties.Value.CreatedOn,
-                properties.Value.LastModified,
-                properties.Value.ETag.ToString(),
-                document.Effect);
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _particleEffectsStore.DownloadAsync(blobName, cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        var properties = blob.Properties;
+        var document = DeserializeStoredParticleEffectDocument(blob.Content.ToString());
+
+        return new UserParticleEffectContent(
+            document.Id,
+            document.Name,
+            document.Type,
+            relativeBlobPath,
+            document.SchemaVersion,
+            document.Version,
+            properties.CreatedOn,
+            properties.LastModified,
+            properties.ETag,
+            document.Effect);
     }
 
     public async Task<UserParticleEffectSaveResult> SaveUserFootTrailParticleEffectAsync(
@@ -1275,12 +1123,10 @@ public class AzureBlobProxyService
         var normalizedParticleEffectId = NormalizeParticleEffectId(particleEffectId);
         var relativeBlobPath = BuildParticleEffectRelativePath(normalizedParticleEffectId);
         var blobName = BuildBlobName(BuildUserParticleEffectsRootPrefix(scopeKey, effectType), relativeBlobPath);
-        var blobClient = _particleEffectsBlobContainerClient.GetBlobClient(blobName);
-
         StoredParticleEffectDocument? existingDocument = null;
         if (!createOnly)
         {
-            existingDocument = await GetStoredParticleEffectDocumentAsync(blobClient, cancellationToken);
+            existingDocument = await GetStoredParticleEffectDocumentAsync(_particleEffectsStore, blobName, cancellationToken);
             if (existingDocument is null)
             {
                 throw new FileNotFoundException($"Particle effect '{normalizedParticleEffectId}' was not found.");
@@ -1295,24 +1141,11 @@ public class AzureBlobProxyService
             (existingDocument?.Version ?? 0) + 1,
             effect);
         var json = JsonSerializer.Serialize(document, JsonOptions);
-
-        await using (var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
-        {
-            await blobClient.UploadAsync(
-                stream,
-                new BlobUploadOptions
-                {
-                    Conditions = BuildJsonAssetWriteConditions(ifMatchEtag, createOnly),
-                    HttpHeaders = new BlobHttpHeaders
-                    {
-                        ContentType = "application/json"
-                    },
-                    Metadata = BuildParticleEffectBlobMetadata(document)
-                },
-                cancellationToken);
-        }
-
-        var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+        var properties = await _particleEffectsStore.UploadAsync(
+            blobName,
+            json,
+            BuildConditionalJsonWriteOptions(BuildParticleEffectBlobMetadata(document), ifMatchEtag, createOnly),
+            cancellationToken);
 
         return new UserParticleEffectSaveResult(
             document.Id,
@@ -1321,9 +1154,9 @@ public class AzureBlobProxyService
             relativeBlobPath,
             document.SchemaVersion,
             document.Version,
-            properties.Value.CreatedOn,
-            properties.Value.LastModified,
-            properties.Value.ETag.ToString(),
+            properties.CreatedOn,
+            properties.LastModified,
+            properties.ETag,
             document.Effect);
     }
 
@@ -1357,77 +1190,20 @@ public class AzureBlobProxyService
         var blobName = BuildBlobName(
             BuildUserParticleEffectsRootPrefix(scopeKey, effectType),
             BuildParticleEffectRelativePath(normalizedParticleEffectId));
-        var blobClient = _particleEffectsBlobContainerClient.GetBlobClient(blobName);
-        var response = await blobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-
-        return response.Value;
+        return await _particleEffectsStore.DeleteIfExistsAsync(blobName, cancellationToken);
     }
 
-    public async Task<AzureStorageIdentityInfo> GetStorageIdentityInfoAsync(CancellationToken cancellationToken)
-    {
-        var accessToken = await _credential.GetTokenAsync(
-            new TokenRequestContext(StorageScopes),
-            cancellationToken);
+    public Task<AzureStorageIdentityInfo> GetStorageIdentityInfoAsync(CancellationToken cancellationToken)
+        => _userContextProvider.GetIdentityInfoAsync(cancellationToken);
 
-        var claims = ParseJwtClaims(accessToken.Token);
-
-        return new AzureStorageIdentityInfo(
-            _credential.GetType().Name,
-            accessToken.ExpiresOn,
-            claims);
-    }
-
-    public async Task<StorageUserContext> GetStorageUserContextAsync(CancellationToken cancellationToken)
-    {
-        var identity = await GetStorageIdentityInfoAsync(cancellationToken);
-
-        identity.Claims.TryGetValue("oid", out var objectIds);
-        identity.Claims.TryGetValue("email", out var emails);
-        identity.Claims.TryGetValue("preferred_username", out var preferredUsernames);
-        identity.Claims.TryGetValue("unique_name", out var uniqueNames);
-        identity.Claims.TryGetValue("name", out var names);
-
-        var objectId = objectIds?.FirstOrDefault();
-        var email = emails?.FirstOrDefault()
-            ?? preferredUsernames?.FirstOrDefault()
-            ?? uniqueNames?.FirstOrDefault();
-        var displayName = names?.FirstOrDefault();
-        var scopeKey = NormalizeScopeKey(objectId)
-            ?? NormalizeScopeKey(email)
-            ?? "local-dev-user";
-
-        return new StorageUserContext(scopeKey, objectId, email, displayName);
-    }
+    public Task<StorageUserContext> GetStorageUserContextAsync(CancellationToken cancellationToken)
+        => _userContextProvider.GetUserContextAsync(cancellationToken);
 
     private async Task<ClientMessagesResponse> GetClientMessagesDocumentAsync(CancellationToken cancellationToken)
     {
         var blobName = _options.ClientMessagesBlobName.Trim('/');
-        var blobClient = _clientMessagesBlobContainerClient.GetBlobClient(blobName);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken);
-            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-            using var document = JsonDocument.Parse(response.Value.Content.ToString());
-            var root = document.RootElement;
-            var messages = root.TryGetProperty("messages", out var messagesElement) &&
-                           messagesElement.ValueKind == JsonValueKind.Array
-                ? messagesElement
-                    .EnumerateArray()
-                    .Select(ParseClientMessage)
-                    .Where(message => message is not null)
-                    .Select(message => message!)
-                    .ToArray()
-                : [];
-
-            return new ClientMessagesResponse(
-                GetInt32Property(root, "version", 1),
-                GetStringProperty(root, "updatedAt") ?? DateTimeOffset.UnixEpoch.ToString("O"),
-                messages,
-                properties.Value.ETag.ToString(),
-                properties.Value.LastModified);
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _clientMessagesStore.DownloadAsync(blobName, cancellationToken);
+        if (blob is null)
         {
             return new ClientMessagesResponse(
                 1,
@@ -1436,46 +1212,62 @@ public class AzureBlobProxyService
                 null,
                 null);
         }
+
+        using var document = JsonDocument.Parse(blob.Content.ToString());
+        var root = document.RootElement;
+        var messages = root.TryGetProperty("messages", out var messagesElement) &&
+                       messagesElement.ValueKind == JsonValueKind.Array
+            ? messagesElement
+                .EnumerateArray()
+                .Select(ParseClientMessage)
+                .Where(message => message is not null)
+                .Select(message => message!)
+                .ToArray()
+            : [];
+
+        return new ClientMessagesResponse(
+            GetInt32Property(root, "version", 1),
+            GetStringProperty(root, "updatedAt") ?? DateTimeOffset.UnixEpoch.ToString("O"),
+            messages,
+            blob.Properties.ETag,
+            blob.Properties.LastModified);
     }
 
     private async Task<Dictionary<string, ClientMessageUserState>> GetClientMessagesStateAsync(
         string scopeKey,
         CancellationToken cancellationToken)
     {
-        var blobClient = _userPreferencesBlobContainerClient.GetBlobClient(
-            BuildBlobName(BuildUserPreferencesRootPrefix(scopeKey), "messages-state.json"));
-
-        try
+        var result = new Dictionary<string, ClientMessageUserState>(StringComparer.OrdinalIgnoreCase);
+        var blob = await _userPreferencesStore.DownloadAsync(
+            BuildBlobName(BuildUserPreferencesRootPrefix(scopeKey), "messages-state.json"),
+            cancellationToken);
+        if (blob is null)
         {
-            var response = await blobClient.DownloadContentAsync(cancellationToken);
-            using var document = JsonDocument.Parse(response.Value.Content.ToString());
-            var root = document.RootElement;
-            var result = new Dictionary<string, ClientMessageUserState>(StringComparer.OrdinalIgnoreCase);
-
-            if (!root.TryGetProperty("messages", out var messagesElement) ||
-                messagesElement.ValueKind != JsonValueKind.Object)
-            {
-                return result;
-            }
-
-            foreach (var property in messagesElement.EnumerateObject())
-            {
-                if (property.Value.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                result[property.Name] = new ClientMessageUserState(
-                    GetDateTimeOffsetProperty(property.Value, "readAt"),
-                    GetDateTimeOffsetProperty(property.Value, "dismissedAt"));
-            }
-
             return result;
         }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+
+        using var document = JsonDocument.Parse(blob.Content.ToString());
+        var root = document.RootElement;
+
+        if (!root.TryGetProperty("messages", out var messagesElement) ||
+            messagesElement.ValueKind != JsonValueKind.Object)
         {
-            return new Dictionary<string, ClientMessageUserState>(StringComparer.OrdinalIgnoreCase);
+            return result;
         }
+
+        foreach (var property in messagesElement.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            result[property.Name] = new ClientMessageUserState(
+                GetDateTimeOffsetProperty(property.Value, "readAt"),
+                GetDateTimeOffsetProperty(property.Value, "dismissedAt"));
+        }
+
+        return result;
     }
 
     private async Task UpdateClientMessageStateAsync(
@@ -1500,8 +1292,6 @@ public class AzureBlobProxyService
         IReadOnlyDictionary<string, ClientMessageUserState> state,
         CancellationToken cancellationToken)
     {
-        var blobClient = _userPreferencesBlobContainerClient.GetBlobClient(
-            BuildBlobName(BuildUserPreferencesRootPrefix(scopeKey), "messages-state.json"));
         var payload = new
         {
             version = 1,
@@ -1510,14 +1300,11 @@ public class AzureBlobProxyService
         };
         var jsonContent = JsonSerializer.Serialize(payload, JsonOptions);
 
-        await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(jsonContent));
-        await blobClient.UploadAsync(stream, overwrite: true, cancellationToken: cancellationToken);
-        await blobClient.SetHttpHeadersAsync(
-            new BlobHttpHeaders
-            {
-                ContentType = "application/json"
-            },
-            cancellationToken: cancellationToken);
+        await _userPreferencesStore.UploadAsync(
+            BuildBlobName(BuildUserPreferencesRootPrefix(scopeKey), "messages-state.json"),
+            jsonContent,
+            new BlobWriteOptions("application/json"),
+            cancellationToken);
     }
 
     private static ClientMessageResponse? ParseClientMessage(JsonElement element)
@@ -1698,29 +1485,6 @@ public class AzureBlobProxyService
         return DateTimeOffset.TryParse(value, out var result) ? result : null;
     }
 
-    private TokenCredential CreateCredential()
-    {
-        var credentialOptions = new DefaultAzureCredentialOptions
-        {
-            ExcludeInteractiveBrowserCredential = true
-        };
-
-        return new DefaultAzureCredential(credentialOptions);
-    }
-
-    private BlobContainerClient CreateBlobContainerClient(string storageBaseUrl, string optionName)
-    {
-        if (string.IsNullOrWhiteSpace(storageBaseUrl))
-        {
-            throw new InvalidOperationException(
-                $"{AzureBlobProxyOptions.SectionName}:{optionName} must be configured.");
-        }
-        var containerUri = new Uri(storageBaseUrl.TrimEnd('/'), UriKind.Absolute);
-
-        _logger.LogInformation("Using DefaultAzureCredential for Azure Blob container {ContainerUri}", containerUri);
-        return new BlobContainerClient(containerUri, _credential);
-    }
-
     private static string BuildBlobName(string prefix, string? blobPath)
     {
         var sanitizedPrefix = prefix.Trim('/');
@@ -1753,141 +1517,93 @@ public class AzureBlobProxyService
         return normalizedPath;
     }
 
-    private static IReadOnlyDictionary<string, string[]> ParseJwtClaims(string token)
-    {
-        var segments = token.Split('.');
-        if (segments.Length < 2)
-        {
-            return new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        var payload = segments[1]
-            .Replace('-', '+')
-            .Replace('_', '/');
-
-        var remainder = payload.Length % 4;
-        if (remainder > 0)
-        {
-            payload = payload.PadRight(payload.Length + (4 - remainder), '=');
-        }
-
-        var payloadBytes = Convert.FromBase64String(payload);
-        using var document = JsonDocument.Parse(payloadBytes);
-        var claims = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var property in document.RootElement.EnumerateObject())
-        {
-            claims[property.Name] = property.Value.ValueKind switch
-            {
-                JsonValueKind.Array => property.Value.EnumerateArray()
-                    .Select(element => element.ToString())
-                    .ToArray(),
-                _ => [property.Value.ToString()]
-            };
-        }
-
-        return claims;
-    }
-
     private async Task<UserStackStampListItem?> CreateUserStackStampListItemAsync(
-        BlobItem blobItem,
+        StoredBlobItem blobItem,
         string scopeKey,
         CancellationToken cancellationToken)
     {
         var rootPrefix = BuildUserStackStampsRootPrefix(scopeKey);
         var relativeBlobPath = TrimPrefix(rootPrefix, blobItem.Name);
-        var blobClient = _stackStampsBlobContainerClient.GetBlobClient(blobItem.Name);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            var document = DeserializeStoredStackStampDocument(response.Value.Content.ToString());
-
-            return new UserStackStampListItem(
-                document.Id,
-                document.Name,
-                document.Description,
-                relativeBlobPath,
-                document.HasPreview,
-                document.SchemaVersion,
-                document.Version,
-                document.Tags,
-                document.Footprint,
-                document.EntryCount,
-                document.TileReferences,
-                document.CharacterReferences,
-                blobItem.Properties.CreatedOn,
-                blobItem.Properties.LastModified,
-                blobItem.Properties.ETag?.ToString());
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _stackStampsStore.DownloadAsync(blobItem.Name, cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        var document = DeserializeStoredStackStampDocument(blob.Content.ToString());
+
+        return new UserStackStampListItem(
+            document.Id,
+            document.Name,
+            document.Description,
+            relativeBlobPath,
+            document.HasPreview,
+            document.SchemaVersion,
+            document.Version,
+            document.Tags,
+            document.Footprint,
+            document.EntryCount,
+            document.TileReferences,
+            document.CharacterReferences,
+            blob.Properties.CreatedOn,
+            blob.Properties.LastModified,
+            blob.Properties.ETag);
     }
 
     private async Task<UserEditorCharacterListItem?> CreateUserEditorCharacterListItemAsync(
-        BlobItem blobItem,
+        StoredBlobItem blobItem,
         string scopeKey,
         CancellationToken cancellationToken)
     {
         var rootPrefix = BuildUserEditorCharactersRootPrefix(scopeKey);
         var relativeBlobPath = TrimPrefix(rootPrefix, blobItem.Name);
-        var blobClient = _blobContainerClient.GetBlobClient(blobItem.Name);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            var document = DeserializeStoredEditorCharacterDocument(response.Value.Content.ToString());
-
-            return new UserEditorCharacterListItem(
-                document.Id,
-                document.Name,
-                relativeBlobPath,
-                document.HasThumbnail,
-                document.SchemaVersion,
-                document.Version,
-                document.SelectedPackId,
-                blobItem.Properties.CreatedOn,
-                blobItem.Properties.LastModified,
-                blobItem.Properties.ETag?.ToString());
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _assetsStore.DownloadAsync(blobItem.Name, cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        var document = DeserializeStoredEditorCharacterDocument(blob.Content.ToString());
+
+        return new UserEditorCharacterListItem(
+            document.Id,
+            document.Name,
+            relativeBlobPath,
+            document.HasThumbnail,
+            document.SchemaVersion,
+            document.Version,
+            document.SelectedPackId,
+            blob.Properties.CreatedOn,
+            blob.Properties.LastModified,
+            blob.Properties.ETag);
     }
 
     private async Task<UserParticleEffectListItem?> CreateUserParticleEffectListItemAsync(
-        BlobItem blobItem,
+        StoredBlobItem blobItem,
         string scopeKey,
         string effectType,
         CancellationToken cancellationToken)
     {
         var rootPrefix = BuildUserParticleEffectsRootPrefix(scopeKey, effectType);
         var relativeBlobPath = TrimPrefix(rootPrefix, blobItem.Name);
-        var blobClient = _particleEffectsBlobContainerClient.GetBlobClient(blobItem.Name);
-
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            var document = DeserializeStoredParticleEffectDocument(response.Value.Content.ToString());
-
-            return new UserParticleEffectListItem(
-                document.Id,
-                document.Name,
-                document.Type,
-                relativeBlobPath,
-                document.SchemaVersion,
-                document.Version,
-                blobItem.Properties.CreatedOn,
-                blobItem.Properties.LastModified,
-                blobItem.Properties.ETag?.ToString());
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        var blob = await _particleEffectsStore.DownloadAsync(blobItem.Name, cancellationToken);
+        if (blob is null)
         {
             return null;
         }
+
+        var document = DeserializeStoredParticleEffectDocument(blob.Content.ToString());
+
+        return new UserParticleEffectListItem(
+            document.Id,
+            document.Name,
+            document.Type,
+            relativeBlobPath,
+            document.SchemaVersion,
+            document.Version,
+            blob.Properties.CreatedOn,
+            blob.Properties.LastModified,
+            blob.Properties.ETag);
     }
 
     private static bool MatchesStackStampFilters(
@@ -1908,18 +1624,12 @@ public class AzureBlobProxyService
     }
 
     private async Task<StoredStackStampDocument?> GetStoredStackStampDocumentAsync(
-        BlobClient blobClient,
+        IBlobStore store,
+        string blobName,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            return DeserializeStoredStackStampDocument(response.Value.Content.ToString());
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
-        {
-            return null;
-        }
+        var blob = await store.DownloadAsync(blobName, cancellationToken);
+        return blob is null ? null : DeserializeStoredStackStampDocument(blob.Content.ToString());
     }
 
     private static StoredStackStampDocument DeserializeStoredStackStampDocument(string json)
@@ -1934,18 +1644,12 @@ public class AzureBlobProxyService
     }
 
     private async Task<StoredEditorCharacterDocument?> GetStoredEditorCharacterDocumentAsync(
-        BlobClient blobClient,
+        IBlobStore store,
+        string blobName,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            return DeserializeStoredEditorCharacterDocument(response.Value.Content.ToString());
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
-        {
-            return null;
-        }
+        var blob = await store.DownloadAsync(blobName, cancellationToken);
+        return blob is null ? null : DeserializeStoredEditorCharacterDocument(blob.Content.ToString());
     }
 
     private static StoredEditorCharacterDocument DeserializeStoredEditorCharacterDocument(string json)
@@ -1960,18 +1664,12 @@ public class AzureBlobProxyService
     }
 
     private async Task<StoredParticleEffectDocument?> GetStoredParticleEffectDocumentAsync(
-        BlobClient blobClient,
+        IBlobStore store,
+        string blobName,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var response = await blobClient.DownloadContentAsync(cancellationToken: cancellationToken);
-            return DeserializeStoredParticleEffectDocument(response.Value.Content.ToString());
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
-        {
-            return null;
-        }
+        var blob = await store.DownloadAsync(blobName, cancellationToken);
+        return blob is null ? null : DeserializeStoredParticleEffectDocument(blob.Content.ToString());
     }
 
     private static StoredParticleEffectDocument DeserializeStoredParticleEffectDocument(string json)
@@ -1983,27 +1681,6 @@ public class AzureBlobProxyService
         }
 
         return document;
-    }
-
-    private static BlobRequestConditions BuildStackStampWriteConditions(string? ifMatchEtag, bool createOnly)
-    {
-        if (createOnly)
-        {
-            return new BlobRequestConditions
-            {
-                IfNoneMatch = ETag.All
-            };
-        }
-
-        if (string.IsNullOrWhiteSpace(ifMatchEtag))
-        {
-            throw new ArgumentException("An etag is required for updates.", nameof(ifMatchEtag));
-        }
-
-        return new BlobRequestConditions
-        {
-            IfMatch = new ETag(ifMatchEtag)
-        };
     }
 
     private static Dictionary<string, string> BuildStackStampBlobMetadata(StoredStackStampDocument document)
@@ -2261,27 +1938,25 @@ public class AzureBlobProxyService
             _ => NormalizeParticleEffectId(effectType)
         };
 
-    private static BlobRequestConditions BuildJsonAssetWriteConditions(string? ifMatchEtag, bool createOnly)
+    private static void EnsureWriteConditionIsValid(string? ifMatchEtag, bool createOnly)
     {
-        if (createOnly)
-        {
-            return new BlobRequestConditions
-            {
-                IfNoneMatch = ETag.All
-            };
-        }
-
-        if (string.IsNullOrWhiteSpace(ifMatchEtag))
+        if (!createOnly && string.IsNullOrWhiteSpace(ifMatchEtag))
         {
             throw new ArgumentException("An etag is required for updates.", nameof(ifMatchEtag));
         }
-
-        return new BlobRequestConditions
-        {
-            IfMatch = new ETag(ifMatchEtag)
-        };
     }
 
+    private static BlobWriteOptions BuildConditionalJsonWriteOptions(
+        IReadOnlyDictionary<string, string> metadata,
+        string? ifMatchEtag,
+        bool createOnly)
+    {
+        EnsureWriteConditionIsValid(ifMatchEtag, createOnly);
+
+        return createOnly
+            ? new BlobWriteOptions("application/json", metadata, BlobWriteCondition.IfNotExists)
+            : new BlobWriteOptions("application/json", metadata, BlobWriteCondition.IfMatch, ifMatchEtag);
+    }
     private static string[] NormalizeTags(IReadOnlyList<string>? tags)
     {
         return (tags ?? [])
@@ -2293,20 +1968,6 @@ public class AzureBlobProxyService
             .ToArray();
     }
 
-    private static string? NormalizeScopeKey(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        var normalized = value.Trim().ToLowerInvariant()
-            .Replace("live.com#", string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Replace('@', '_');
-
-        normalized = InvalidGameIdCharacters.Replace(normalized, "-").Trim('-');
-        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
-    }
 }
 
 

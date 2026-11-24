@@ -1,4 +1,6 @@
+using Amazon.S3;
 using KingdomStackServer.Api;
+using KingdomStackServer.Api.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -6,6 +8,30 @@ const string ClientCorsPolicy = "ClientCors";
 
 builder.Services.Configure<AzureBlobProxyOptions>(
     builder.Configuration.GetSection(AzureBlobProxyOptions.SectionName));
+builder.Services.Configure<IdentityOptions>(
+    builder.Configuration.GetSection(IdentityOptions.SectionName));
+
+// AWS settings (profile, region) come from the "AWS" config section; on AWS compute the role is used.
+builder.Services.AddDefaultAWSOptions(builder.Configuration.GetAWSOptions());
+builder.Services.AddAWSService<IAmazonS3>();
+builder.Services.AddSingleton<BlobStoreFactory>();
+
+var identityMode = builder.Configuration[$"{IdentityOptions.SectionName}:Mode"] ?? IdentityModes.AzureCredential;
+if (string.Equals(identityMode, IdentityModes.Configured, StringComparison.OrdinalIgnoreCase))
+{
+    if (!builder.Environment.IsDevelopment())
+    {
+        throw new InvalidOperationException(
+            $"{IdentityOptions.SectionName}:Mode={IdentityModes.Configured} is only allowed in Development.");
+    }
+
+    builder.Services.AddSingleton<IUserContextProvider, ConfiguredUserContextProvider>();
+}
+else
+{
+    builder.Services.AddSingleton<IUserContextProvider, AzureCredentialUserContextProvider>();
+}
+
 builder.Services.AddSingleton<AzureBlobProxyService>();
 builder.Services.AddControllers();
 builder.Services.AddSwaggerGen();

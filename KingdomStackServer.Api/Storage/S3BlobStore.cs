@@ -93,6 +93,15 @@ public sealed class S3BlobStore : IBlobStore
         }
     }
 
+    public async Task<string?> GetReadUrlAsync(string blobName, TimeSpan lifetime, CancellationToken cancellationToken)
+        => await _s3.GetPreSignedURLAsync(new GetPreSignedUrlRequest
+        {
+            BucketName = _bucketName,
+            Key = ToKey(blobName),
+            Verb = HttpVerb.GET,
+            Expires = DateTime.UtcNow.Add(lifetime)
+        });
+
     public async Task<StoredBlobProperties> UploadAsync(
         string blobName,
         Stream content,

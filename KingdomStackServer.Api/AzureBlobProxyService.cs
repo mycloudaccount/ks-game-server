@@ -111,16 +111,31 @@ public class AzureBlobProxyService
         CancellationToken cancellationToken)
         => await GetAssetAsync(_assetsStore, prefix, blobPath, cancellationToken);
 
-    private static async Task<AzureBlobContent?> GetAssetAsync(
+    private async Task<AzureBlobContent?> GetAssetAsync(
         IBlobStore store,
         string prefix,
         string blobPath,
         CancellationToken cancellationToken)
     {
-        var blob = await store.OpenReadAsync(BuildBlobName(prefix, blobPath), cancellationToken);
+        var blobName = BuildBlobName(prefix, blobPath);
+        var blob = await store.OpenReadAsync(blobName, cancellationToken);
         if (blob is null)
         {
             return null;
+        }
+
+        if (_options.RedirectToStorageAboveBytes is { } limit && blob.Properties.ContentLength > limit)
+        {
+            var url = await store.GetReadUrlAsync(blobName, TimeSpan.FromMinutes(5), cancellationToken);
+            if (url is not null)
+            {
+                await blob.Content.DisposeAsync();
+                return new AzureBlobContent
+                {
+                    Content = new BlobRedirectStream(url),
+                    ContentType = blob.Properties.ContentType ?? "application/octet-stream"
+                };
+            }
         }
 
         return new AzureBlobContent

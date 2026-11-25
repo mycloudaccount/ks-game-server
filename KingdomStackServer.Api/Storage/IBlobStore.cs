@@ -20,6 +20,12 @@ public interface IBlobStore
     Task<StoredBlobProperties?> GetPropertiesAsync(string blobName, CancellationToken cancellationToken);
 
     /// <summary>
+    /// A short-lived URL the browser can download the blob from directly, or null when the store
+    /// does not support it. Used for files too large to return through AWS Lambda.
+    /// </summary>
+    Task<string?> GetReadUrlAsync(string blobName, TimeSpan lifetime, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Writes the blob, replacing any existing content unless a condition says otherwise.
     /// Throws <see cref="BlobConditionFailedException"/> when the write condition is not met.
     /// </summary>

@@ -28,9 +28,15 @@ public sealed class CognitoOptions
 
     /// <summary>
     /// The origin the browser sees (e.g. http://localhost:4000 or https://kingdomstack.org).
-    /// Used for the OIDC callback URL and to reject redirects to other sites.
+    /// Used for the OIDC callback URL and to reject redirects to other sites. Required behind a
+    /// proxy (Vite, CloudFront); when empty, the request's own scheme and host are used.
     /// </summary>
     public string PublicOrigin { get; set; } = string.Empty;
+
+    public string ResolvePublicOrigin(HttpRequest request)
+        => string.IsNullOrWhiteSpace(PublicOrigin)
+            ? $"{request.Scheme}://{request.Host}"
+            : PublicOrigin.TrimEnd('/');
 }
 
 public static class CognitoAuthentication
@@ -49,8 +55,7 @@ public static class CognitoAuthentication
                      (nameof(options.Authority), options.Authority),
                      (nameof(options.ClientId), options.ClientId),
                      (nameof(options.ClientSecret), options.ClientSecret),
-                     (nameof(options.Domain), options.Domain),
-                     (nameof(options.PublicOrigin), options.PublicOrigin)
+                     (nameof(options.Domain), options.Domain)
                  })
         {
             if (string.IsNullOrWhiteSpace(value))
@@ -58,8 +63,6 @@ public static class CognitoAuthentication
                 throw new InvalidOperationException($"{CognitoOptions.SectionName}:{name} must be configured.");
             }
         }
-
-        var publicOrigin = options.PublicOrigin.TrimEnd('/');
 
         builder.Services.AddHttpContextAccessor();
         builder.Services
@@ -113,7 +116,7 @@ public static class CognitoAuthentication
                 {
                     // The API sits behind a proxy (Vite locally, CloudFront in production), so build the
                     // callback URL from the configured public origin rather than the request's Host.
-                    context.ProtocolMessage.RedirectUri = publicOrigin + CallbackPath;
+                    context.ProtocolMessage.RedirectUri = options.ResolvePublicOrigin(context.Request) + CallbackPath;
                     return Task.CompletedTask;
                 };
             });
@@ -125,11 +128,11 @@ public static class CognitoAuthentication
     {
         var group = app.MapGroup("/api/auth").AllowAnonymous();
 
-        group.MapGet("/login", (string? post_login_redirect_uri, IOptions<CognitoOptions> options) =>
+        group.MapGet("/login", (string? post_login_redirect_uri, HttpContext context, IOptions<CognitoOptions> options) =>
             Results.Challenge(
                 new AuthenticationProperties
                 {
-                    RedirectUri = ToSafeLocalPath(post_login_redirect_uri, options.Value.PublicOrigin),
+                    RedirectUri = ToSafeLocalPath(post_login_redirect_uri, options.Value.ResolvePublicOrigin(context.Request)),
                     IsPersistent = true
                 },
                 [OpenIdConnectDefaults.AuthenticationScheme]));
@@ -141,7 +144,7 @@ public static class CognitoAuthentication
             // Also end the Cognito hosted session, then come back to the site root
             // (which must be one of the app client's allowed sign-out URLs).
             var value = options.Value;
-            var logoutUri = Uri.EscapeDataString(value.PublicOrigin.TrimEnd('/') + "/");
+            var logoutUri = Uri.EscapeDataString(value.ResolvePublicOrigin(context.Request) + "/");
             return Results.Redirect(
                 $"{value.Domain.TrimEnd('/')}/logout?client_id={Uri.EscapeDataString(value.ClientId)}&logout_uri={logoutUri}");
         });

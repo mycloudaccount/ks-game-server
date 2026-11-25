@@ -1,0 +1,20 @@
+{
+  "name": "kingdom-stack-infra",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.278.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "aws-cdk": "^2.1149.0",
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.3"
+  }
+}

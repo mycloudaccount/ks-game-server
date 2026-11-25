@@ -1,4 +1,6 @@
+using Amazon.Lambda.AspNetCoreServer.Hosting;
 using Amazon.S3;
+using Microsoft.AspNetCore.DataProtection;
 using KingdomStackServer.Api;
 using KingdomStackServer.Api.Auth;
 using KingdomStackServer.Api.Storage;
@@ -6,6 +8,26 @@ using KingdomStackServer.Api.Storage;
 var builder = WebApplication.CreateBuilder(args);
 
 const string ClientCorsPolicy = "ClientCors";
+
+// On AWS, secrets (e.g. /kingdom-stack/dev/config/Cognito/ClientSecret -> Cognito:ClientSecret)
+// come from SSM Parameter Store. Only enabled when the path is set, so local runs are unaffected.
+var ssmConfigPath = builder.Configuration["KS_SSM_CONFIG_PATH"];
+if (!string.IsNullOrWhiteSpace(ssmConfigPath))
+{
+    builder.Configuration.AddSystemsManager(ssmConfigPath);
+}
+
+// Runs as a normal Kestrel app locally; inside AWS Lambda it serves function URL requests instead.
+builder.Services.AddAWSLambdaHosting(LambdaEventSource.HttpApi);
+
+// Lambda instances come and go, so the keys that encrypt the sign-in cookie must be shared.
+var dataProtectionSsmPath = builder.Configuration["DataProtection:SsmPath"];
+if (!string.IsNullOrWhiteSpace(dataProtectionSsmPath))
+{
+    builder.Services.AddDataProtection()
+        .SetApplicationName("kingdom-stack")
+        .PersistKeysToAWSSystemsManager(dataProtectionSsmPath);
+}
 
 builder.Services.Configure<AzureBlobProxyOptions>(
     builder.Configuration.GetSection(AzureBlobProxyOptions.SectionName));
@@ -40,7 +62,7 @@ else
 }
 
 builder.Services.AddSingleton<AzureBlobProxyService>();
-builder.Services.AddControllers();
+builder.Services.AddControllers(options => options.Filters.Add<BlobRedirectResultFilter>());
 builder.Services.AddSwaggerGen();
 builder.Services.AddCors(options =>
 {

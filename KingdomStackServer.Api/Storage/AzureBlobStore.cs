@@ -58,6 +58,10 @@ public sealed class AzureBlobStore(BlobContainerClient containerClient) : IBlobS
         }
     }
 
+    // Azure keeps streaming every file through the API.
+    public Task<string?> GetReadUrlAsync(string blobName, TimeSpan lifetime, CancellationToken cancellationToken)
+        => Task.FromResult<string?>(null);
+
     public async Task<StoredBlobProperties?> GetPropertiesAsync(string blobName, CancellationToken cancellationToken)
     {
         try

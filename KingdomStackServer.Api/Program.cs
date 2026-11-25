@@ -3,6 +3,7 @@ using Amazon.S3;
 using Microsoft.AspNetCore.DataProtection;
 using KingdomStackServer.Api;
 using KingdomStackServer.Api.Auth;
+using KingdomStackServer.Api.Hosting;
 using KingdomStackServer.Api.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -100,6 +101,9 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+app.UseOriginVerification();
+app.UsePublicOrigin();
 
 app.UseCors(ClientCorsPolicy);
 app.UseHttpsRedirection();

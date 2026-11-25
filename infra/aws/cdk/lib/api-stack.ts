@@ -1,5 +1,8 @@
 import * as cdk from "aws-cdk-lib";
+import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
@@ -13,15 +16,20 @@ export interface KingdomStackApiStackProps extends cdk.StackProps {
   /** Output of `dotnet publish -r linux-arm64` for KingdomStackServer.Api. */
   codePath: string;
   cognito: { userPoolId: string; clientId: string; domain: string };
-  /** Origin the browser sees when the API sits behind CloudFront. Leave unset to use the function URL itself. */
+  /**
+   * Origin the browser sees (the CloudFront address or custom domain). It can't be read from the
+   * distribution inside this stack without a dependency cycle, so set it after the first deploy.
+   */
   publicOrigin?: string;
 }
 
 /**
  * KingdomStackServer.Api as a single Lambda function with a function URL.
+ * KingdomStackServer.Api on Lambda plus the editor on S3, both behind one CloudFront distribution.
  * Everything here stays inside the AWS always-free tiers at Kingdom Stack's usage:
  * Lambda (1M requests, 400k GB-s), function URLs (no charge), SSM standard parameters,
- * and CloudWatch Logs (5 GB, kept for 2 weeks).
+ * CloudWatch Logs (5 GB, kept for 2 weeks), CloudFront (1 TB out, 10M requests,
+ * 2M CloudFront Function calls), and S3 for a few MB of editor files.
  */
 export class KingdomStackApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: KingdomStackApiStackProps) {
@@ -32,7 +40,11 @@ export class KingdomStackApiStack extends cdk.Stack {
     const dataProtectionPath = `/kingdom-stack/${props.stage}/data-protection`;
     const s3Url = (prefix: string) => `s3://${props.bucketName}/${prefix}`;
     const parameterArn = (pathPattern: string) =>
-      this.formatArn({ service: "ssm", resource: "parameter", resourceName: pathPattern.replace(/^\//, "") });
+      this.formatArn({
+        service: "ssm",
+        resource: "parameter",
+        resourceName: pathPattern.replace(/^\//, ""),
+      });
 
     const logGroup = new logs.LogGroup(this, "ApiLogs", {
       retention: logs.RetentionDays.TWO_WEEKS,
@@ -84,14 +96,87 @@ export class KingdomStackApiStack extends cdk.Stack {
     // Shared keys for the sign-in cookie, created on first use.
     fn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["ssm:GetParametersByPath", "ssm:PutParameter", "ssm:AddTagsToResource"],
+        actions: [
+          "ssm:GetParametersByPath",
+          "ssm:PutParameter",
+          "ssm:AddTagsToResource",
+        ],
         resources: [parameterArn(`${dataProtectionPath}*`)],
       }),
     );
 
-    const functionUrl = fn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
+    // Public URL, but the API refuses requests without CloudFront's X-Ks-Origin-Verify header.
+    const functionUrl = fn.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+    });
+
+    // --- Editor hosting: one CloudFront address serves the editor (S3) and /api/* (Lambda),
+    // so the sign-in cookie is first-party and the API needs no CORS.
+    const webBucket = new s3.Bucket(this, "Web", {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+    });
+
+    // Same behavior as the old staticwebapp.config.json navigationFallback: paths without a file
+    // extension get index.html. Runs only on the editor behavior, never on /api/*.
+    const spaFallback = new cloudfront.Function(this, "SpaFallback", {
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  var lastSegment = request.uri.substring(request.uri.lastIndexOf('/') + 1);
+  if (lastSegment.indexOf('.') === -1) {
+    request.uri = '/index.html';
+  }
+  return request;
+}`),
+    });
+
+    // Resolved at deploy time; the API loads the same parameter through KS_SSM_CONFIG_PATH.
+    const originSecret = ssm.StringParameter.valueForStringParameter(
+      this,
+      `${configPath}/OriginVerify/Secret`,
+    );
+
+    const distribution = new cloudfront.Distribution(this, "Site", {
+      comment: `Kingdom Stack ${props.stage}`,
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+      defaultRootObject: "index.html",
+      defaultBehavior: {
+        origin: origins.S3BucketOrigin.withOriginAccessControl(webBucket),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        functionAssociations: [
+          {
+            function: spaFallback,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
+      },
+      additionalBehaviors: {
+        "/api/*": {
+          origin: new origins.FunctionUrlOrigin(functionUrl, {
+            customHeaders: { "X-Ks-Origin-Verify": originSecret },
+          }),
+          viewerProtocolPolicy:
+            cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy:
+            cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+        },
+      },
+    });
 
     new cdk.CfnOutput(this, "FunctionUrl", { value: functionUrl.url });
     new cdk.CfnOutput(this, "FunctionName", { value: fn.functionName });
+    new cdk.CfnOutput(this, "SiteUrl", {
+      value: `https://${distribution.distributionDomainName}`,
+    });
+    new cdk.CfnOutput(this, "DistributionId", {
+      value: distribution.distributionId,
+    });
+    new cdk.CfnOutput(this, "WebBucketName", { value: webBucket.bucketName });
   }
 }

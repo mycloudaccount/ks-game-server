@@ -1,3 +1,4 @@
+using Amazon.Lambda.AspNetCoreServer;
 using Amazon.Lambda.AspNetCoreServer.Hosting;
 using Amazon.S3;
 using Microsoft.AspNetCore.DataProtection;
@@ -19,7 +20,16 @@ if (!string.IsNullOrWhiteSpace(ssmConfigPath))
 }
 
 // Runs as a normal Kestrel app locally; inside AWS Lambda it serves function URL requests instead.
-builder.Services.AddAWSLambdaHosting(LambdaEventSource.HttpApi);
+builder.Services.AddAWSLambdaHosting(LambdaEventSource.HttpApi, lambda =>
+{
+    // Lambda's adapter sends any content type it doesn't know as text, which corrupts binary files
+    // such as .glb models (model/gltf-binary), audio and fonts. Send unknown types as binary instead.
+    lambda.DefaultResponseContentEncoding = ResponseContentEncoding.Base64;
+    foreach (var textType in new[] { "text/plain", "text/html", "text/css", "text/javascript", "application/javascript", "application/problem+json", "image/svg+xml" })
+    {
+        lambda.RegisterResponseContentEncodingForContentType(textType, ResponseContentEncoding.Default);
+    }
+});
 
 // Lambda instances come and go, so the keys that encrypt the sign-in cookie must be shared.
 var dataProtectionSsmPath = builder.Configuration["DataProtection:SsmPath"];

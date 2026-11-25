@@ -73,7 +73,7 @@ else
 }
 
 builder.Services.AddSingleton<AzureBlobProxyService>();
-builder.Services.AddControllers(options => options.Filters.Add<BlobRedirectResultFilter>());
+builder.Services.AddControllers(options => options.Filters.Add<AssetFileResultFilter>());
 builder.Services.AddSwaggerGen();
 builder.Services.AddCors(options =>
 {

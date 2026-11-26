@@ -10,7 +10,8 @@ $ErrorActionPreference = "Stop"
 $config = @{
     CORSRules = @(
         @{
-            AllowedOrigins = @($Origins | ForEach-Object { $_.TrimEnd('/') })
+            # -File passes "a,b" as one string, so split on commas as well.
+            AllowedOrigins = @($Origins | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().TrimEnd('/') } | Where-Object { $_ })
             AllowedMethods = @("GET", "HEAD")
             AllowedHeaders = @("*")
             ExposeHeaders  = @("ETag", "Content-Length", "Content-Type")

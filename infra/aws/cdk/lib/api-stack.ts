@@ -1,4 +1,5 @@
 import * as cdk from "aws-cdk-lib";
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -21,10 +22,14 @@ export interface KingdomStackApiStackProps extends cdk.StackProps {
    * distribution inside this stack without a dependency cycle, so set it after the first deploy.
    */
   publicOrigin?: string;
+  /**
+   * Serve the site on a custom domain. The ACM certificate must be in us-east-1 and already validated.
+   * Attaching it is safe before DNS points here; visitors only arrive once DNS is switched.
+   */
+  customDomain?: { name: string; certificateArn: string };
 }
 
 /**
- * KingdomStackServer.Api as a single Lambda function with a function URL.
  * KingdomStackServer.Api on Lambda plus the editor on S3, both behind one CloudFront distribution.
  * Everything here stays inside the AWS always-free tiers at Kingdom Stack's usage:
  * Lambda (1M requests, 400k GB-s), function URLs (no charge), SSM standard parameters,
@@ -142,6 +147,16 @@ function handler(event) {
     const distribution = new cloudfront.Distribution(this, "Site", {
       comment: `Kingdom Stack ${props.stage}`,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+      ...(props.customDomain
+        ? {
+            domainNames: [props.customDomain.name],
+            certificate: acm.Certificate.fromCertificateArn(
+              this,
+              "SiteCertificate",
+              props.customDomain.certificateArn,
+            ),
+          }
+        : {}),
       defaultRootObject: "index.html",
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(webBucket),

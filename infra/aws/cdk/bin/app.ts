@@ -34,8 +34,12 @@ new KingdomStackApiStack(app, "KingdomStackApiProd", {
   ...shared,
   stage: "prod",
   bucketName: "kingdom-stack-prod-897154406373",
+  // At cutover, switch to https://kingdomstack.org (the CloudFront address then stops working for sign-in).
   publicOrigin: "https://d12ch69blsir6f.cloudfront.net",
-  // At cutover, switch publicOrigin to https://kingdomstack.org
-  // and add customDomain: { name: "kingdomstack.org", certificateArn: "arn:aws:acm:us-east-1:897154406373:certificate/c7100bf8-5031-455b-9725-5f167415f49a" }.
+  customDomain: {
+    name: "kingdomstack.org",
+    certificateArn:
+      "arn:aws:acm:us-east-1:897154406373:certificate/c7100bf8-5031-455b-9725-5f167415f49a",
+  },
   tags: { app: "kingdom-stack", env: "prod" },
 });

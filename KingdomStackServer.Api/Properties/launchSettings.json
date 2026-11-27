@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "https://json.schemastore.org/launchsettings.json",
   "profiles": {
     "http": {
@@ -8,6 +8,25 @@
       "applicationUrl": "http://localhost:5070",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "http-aws": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5070",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "AWS__Profile": "careflow",
+        "AWS__Region": "us-east-1",
+        "AzureBlobProxy__StorageBaseUrl": "s3://kingdom-stack-dev-897154406373/game-assets",
+        "AzureBlobProxy__UserGamesStorageBaseUrl": "s3://kingdom-stack-dev-897154406373/user-games",
+        "AzureBlobProxy__UserPreferencesStorageBaseUrl": "s3://kingdom-stack-dev-897154406373/user-preferences",
+        "AzureBlobProxy__ClientMessagesStorageBaseUrl": "s3://kingdom-stack-dev-897154406373/editor-messages",
+        "AzureBlobProxy__StackStampsStorageBaseUrl": "s3://kingdom-stack-dev-897154406373/game-assets",
+        "AzureBlobProxy__ParticleEffectsStorageBaseUrl": "s3://kingdom-stack-dev-897154406373/game-assets",
+        "Identity__Mode": "Cognito",
+        "Cognito__PublicOrigin": "http://localhost:4000"
       }
     },
     "https": {

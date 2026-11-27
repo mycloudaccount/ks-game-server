@@ -18,3 +18,11 @@ obj/
 
 # Logs
 *.log
+
+# The CDK app entry point lives in a bin/ folder too
+!infra/aws/cdk/bin/
+
+# AWS deploy output
+artifacts/
+node_modules/
+cdk.out/

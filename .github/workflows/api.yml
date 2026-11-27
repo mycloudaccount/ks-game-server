@@ -1,0 +1,97 @@
+# Builds the API on every pull request and deploys it to AWS on pushes:
+#   dev  -> KingdomStackApiDev  (https://dn2b9xiqserj6.cloudfront.net)
+#   main -> KingdomStackApiProd (https://kingdomstack.org)
+# AWS access uses GitHub OIDC; no AWS keys are stored in GitHub. The role can only be used from the
+# matching GitHub environment, and each environment only accepts deploys from its own branch.
+name: API
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+concurrency:
+  group: api-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/aws/cdk/package-lock.json
+
+      - name: Build API
+        run: dotnet build KingdomStackServer.Api/KingdomStackServer.Api.csproj -c Release
+
+      - name: Publish for Lambda (linux-arm64)
+        shell: pwsh
+        run: ./infra/aws/publish-api.ps1
+
+      - name: Install CDK dependencies
+        working-directory: infra/aws/cdk
+        run: npm ci
+
+      - name: Type-check and synthesize stacks
+        working-directory: infra/aws/cdk
+        run: |
+          npx tsc -p .
+          npx cdk synth --quiet
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: lambda-api
+          path: artifacts/lambda-api
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      STACK: ${{ github.ref_name == 'main' && 'KingdomStackApiProd' || 'KingdomStackApiDev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: lambda-api
+          path: artifacts/lambda-api
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/aws/cdk/package-lock.json
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Install CDK dependencies
+        working-directory: infra/aws/cdk
+        run: npm ci
+
+      - name: Deploy ${{ env.STACK }}
+        working-directory: infra/aws/cdk
+        run: npx cdk deploy "$STACK" --require-approval never

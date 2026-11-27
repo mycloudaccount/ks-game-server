@@ -1,4 +1,4 @@
-using Azure;
+using KingdomStackServer.Api.Storage;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 
@@ -120,7 +120,7 @@ public sealed class StackStampsController : ControllerBase
                 new { stackStampId = result.Id },
                 MapDetail(result));
         }
-        catch (RequestFailedException ex) when (ex.Status == 409 || ex.Status == 412)
+        catch (BlobConditionFailedException ex) when (ex.Status == 409 || ex.Status == 412)
         {
             return Conflict("A stack stamp with this id already exists.");
         }
@@ -193,7 +193,7 @@ public sealed class StackStampsController : ControllerBase
         {
             return NotFound();
         }
-        catch (RequestFailedException ex) when (ex.Status == 412)
+        catch (BlobConditionFailedException ex) when (ex.Status == 412)
         {
             return StatusCode(StatusCodes.Status412PreconditionFailed, "The stack stamp was modified by another request.");
         }

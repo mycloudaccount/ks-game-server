@@ -1,14 +1,21 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>b70bac58-c2ab-4723-bc18-cc26c92f33a6</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Amazon.AspNetCore.DataProtection.SSM" Version="4.0.3" />
+    <PackageReference Include="Amazon.Extensions.Configuration.SystemsManager" Version="7.1.1" />
+    <PackageReference Include="Amazon.Lambda.AspNetCoreServer.Hosting" Version="2.2.1" />
+    <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="4.1.0.3" />
+    <PackageReference Include="AWSSDK.S3" Version="4.1.2" />
     <PackageReference Include="Azure.Identity" Version="1.14.2" />
     <PackageReference Include="Azure.Storage.Blobs" Version="12.24.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.3" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.2" />
   </ItemGroup>
 

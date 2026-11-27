@@ -1,0 +1,28 @@
+# Build output
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+
+# IDE settings
+.vs/
+.vscode/
+
+# Local tool state
+.dotnet/
+.dotnet-home/
+.buildcheck/
+.tmp-build/
+
+# Logs
+*.log
+
+# The CDK app entry point lives in a bin/ folder too
+!infra/aws/cdk/bin/
+
+# AWS deploy output
+artifacts/
+node_modules/
+cdk.out/

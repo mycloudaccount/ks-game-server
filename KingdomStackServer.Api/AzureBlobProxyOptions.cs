@@ -41,4 +41,11 @@ public class AzureBlobProxyOptions
     public string ParticleEffectsStorageBaseUrl { get; set; } = string.Empty;
 
     public string ParticleEffectsPrefix { get; set; } = "particle-effects";
+
+    /// <summary>
+    /// Files larger than this are served by redirecting to a short-lived signed storage URL
+    /// (S3 only). Leave unset to always stream through the API. Set on AWS Lambda, where
+    /// responses are limited to about 6 MB.
+    /// </summary>
+    public long? RedirectToStorageAboveBytes { get; set; }
 }
